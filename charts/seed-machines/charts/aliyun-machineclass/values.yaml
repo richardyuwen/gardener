@@ -1,0 +1,24 @@
+machineClasses:
+- name: class-1
+  imageId: centos_7_04_64_20G_alibase_201701015.vhd
+  region: cn-hangzhou
+  instanceType: ecs.n1.tiny
+  keyPairName: test-keypair 
+  vSwitchId: vsw-1234567890 
+  securityGroupId: sg-1234567890 
+  internetMaxBandwidthIn:  5 
+  internetMaxBandwidthOut:  0 
+  tags:
+    tag1Key: kubernetes.io/cluster/shoot-crazy-botany
+    tag1Value: "1"
+    tag2Key: kubernetes.io/role/node 
+    tag2Value: "1"
+  secret:
+    aliyunAccessKeyId: ABCD
+    aliyunAccessKeySecret: ABCD
+    userData: abc
+  systemDisk:
+    category: cloud_efficiency 
+    size: 20 
+
+

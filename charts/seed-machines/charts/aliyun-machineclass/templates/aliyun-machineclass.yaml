@@ -1,0 +1,40 @@
+{{- range $index, $machineClass := .Values.machineClasses }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $machineClass.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    garden.sapcloud.io/purpose: machineclass
+type: Opaque
+data:
+  userData: {{ $machineClass.secret.userData | b64enc }}
+  aliyunAccessKeyId: {{ $machineClass.secret.aliyunAccessKeyId | b64enc }}
+  aliyunAccessKeySecret: {{ $machineClass.secret.aliyunAccessKeySecret | b64enc }}
+---
+apiVersion: machine.sapcloud.io/v1alpha1
+kind: AliyunMachineClass
+metadata:
+  name: {{ $machineClass.name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  imageId: {{ $machineClass.imageId }} # centos_7_04_64_20G_alibase_201701015.vhd 
+  region: {{ $machineClass.region }} # cn-hangzhou
+  instanceType: {{ $machineClass.instanceType }} # ecs.n1.tiny
+  keyPairName: {{ $machineClass.keyPairName }} # test-keypair 
+  vSwitchId: {{ $machineClass.vSwitchId }} # vsw-1234567890 
+  securityGroupId: {{ $machineClass.securityGroupId }} # sg-1234567890 
+  internetMaxBandwidthIn: {{ $machineClass.internetMaxBandwidthIn }} # 5 
+  internetMaxBandwidthOut: {{ $machineClass.internetMaxBandwidthOut }} # 0 
+{{- if $machineClass.tags }}
+  tags:
+{{ toYaml $machineClass.tags | indent 4 }}
+{{- end }}
+  secretRef:
+    name: {{ $machineClass.name }}  # test-secret 
+    namespace: {{ $.Release.Namespace }} # default
+  systemDisk:
+    category: {{ $machineClass.systemDisk.category }} 
+    size: {{ $machineClass.systemDisk.size }} 
+{{- end }}
