@@ -1,18 +1,20 @@
-alicloud:
-  region: cn-hangzhou
+# alicloud:
+#   region: cn-hangzhou
 
-create:
-  vpc: true
+# create:
+#   vpc: true
 
 # sshPublicKey: sshkey-12345
 
-# vpc:
-#   id: ${aws_vpc.vpc.id}
-#   cidr: 10.10.10.10/6
-#   dhcpDomainName: eu-west-1.compute.internal
-#   internetGatewayID: ${aws_internet_gateway.igw.id}
+# clusterName: cosine-aha
 
-# clusterName: test-namespace
+# vpc:
+#   cidr: 10.0.0.0/8
+
+# zone:
+#   name: cn-hangzhou-e
+#   cidr: 10.250.0.0/19
+
 
 # names:
 #   configuration: shoot.tf-config
@@ -20,15 +22,3 @@ create:
 #   state: shoot.tf-state
 
 # initializeEmptyState: true
-
-# zones:
-# - name: eu-west-1a
-#   cidr:
-#     worker: 10.250.0.0/19
-#     public: 10.250.96.0/22
-#     internal: 10.250.112.0/22
-# - name: eu-west-1b
-#   cidr:
-#     worker: 10.250.0.0/19
-#     public: 10.250.96.0/22
-#     internal: 10.250.112.0/22

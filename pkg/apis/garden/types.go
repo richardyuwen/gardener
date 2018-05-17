@@ -67,6 +67,9 @@ type CloudProfileSpec struct {
 	// OpenStack is the profile specification for the OpenStack cloud.
 	// +optional
 	OpenStack *OpenStackProfile
+	// Aliyun is the profile specification for the Aliyun.
+	// +optional
+	Aliyun *AliyunProfile
 	// Local is the profile specification for the Local provider.
 	// +optional
 	Local *LocalProfile
@@ -260,6 +263,36 @@ type LocalProfile struct {
 type LocalConstraints struct {
 	// DNSProviders contains constraints regarding allowed values of the 'dns.provider' block in the Shoot specification.
 	DNSProviders []DNSProviderConstraint
+}
+
+// AliyunProfile defines certain constraints and definition for the Aliyun
+type AliyunProfile struct {
+	// Constraints is an object containing constraints for certain values in the Shoot spec
+	Constraints AliyunConstraints
+}
+
+// AliyunConstraints is an object containing contraints for certain values in the Shoot specification
+type AliyunConstraints struct {
+    // DNSProviders contains constraints regarding allowed values of the 'dns.provider' block in the Shoot specification.
+	DNSProviders []DNSProviderConstraint
+	// Kubernetes contains constraints regarding allowed values of the 'kubernetes' block in the Shoot specification.
+	Kubernetes KubernetesConstraints
+	// MachineImages contains constraints regarding allowed values for machine images in the Shoot specification.
+	MachineImages []AliyunMachineImage
+	// MachineTypes contains constraints regarding allowed values for machine types in the 'workers' block in the Shoot specification.
+	MachineTypes []MachineType
+	// VolumeTypes contains constraints regarding allowed values for volume types in the 'workers' block in the Shoot specification.
+	VolumeTypes []VolumeType
+	// Zones contains constraints regarding allowed values for 'zones' block in the Shoot specification.
+	Zones []Zone
+}
+
+// AliyunMachineImage defines something which is simliar to all others
+type AliyunMachineImage struct {
+	// Name is the name of the image
+	Name MachineImageName
+	// Image is the technical name of the image. 
+	Image string
 }
 
 // DNSProviderConstraint contains constraints regarding allowed values of the 'dns.provider' block in the Shoot specification.
@@ -608,6 +641,9 @@ type Cloud struct {
 	// OpenStack contains the Shoot specification for the OpenStack cloud.
 	// +optional
 	OpenStack *OpenStackCloud
+	// Aliyun contains the Shoot specification for the Aliyun
+	// +optional
+	Aliyun *AliyunCloud
 	// Local contains the Shoot specification for the Local local provider.
 	// +optional
 	Local *Local
@@ -804,6 +840,45 @@ type OpenStackWorker struct {
 	Worker
 }
 
+// AliyunCloud contains the Shoot specification for Aliyun
+type AliyunCloud struct {
+	// MachineImage holds information about the machine image to use for all works.
+	// +optional
+	MachineImage *AliyunMachineImage
+	// Networks holds information about the K8s and infra networks.
+	Networks AliyunNetworks
+	// Workers is a list of worker groups.
+	Workers []AliyunWorker
+	// Zones is a list of az to deploy the Shoot cluster to.
+	Zones []string
+}
+
+// AliyunNetworks hold information about the k8s and infra networks.
+type AliyunNetworks struct {
+	K8SNetworks
+	// VPC indicates whether to use an existing VPC or create a new one.
+	// +optional
+	VPC *AliyunVPC
+	// Works is a list of CIDRs of worker subnets (private) to create (used for the VMs)
+	Workers []CIDR
+}
+
+// AliyunVPC indicates whether to use an existing VPC or create a new one.
+type AliyunVPC struct {
+	// Name is the name of an existing Aliyun
+	Name string
+}
+
+// AliyunWorker is the definition of a worker group
+type AliyunWorker struct {
+	Worker
+	// VolumeType is the type of the root volumes.
+	VolumeType string
+	// VolumeSize is the size of the root volume.
+	VolumeSize string
+}
+
+
 // Local contains the Shoot specification for local provider.
 type Local struct {
 	// Networks holds information about the Kubernetes and infrastructure networks.
@@ -966,6 +1041,8 @@ const (
 	CloudProviderGCP CloudProvider = "gcp"
 	// CloudProviderOpenStack is a constant for the OpenStack cloud provider.
 	CloudProviderOpenStack CloudProvider = "openstack"
+	// CloudProviderAliyun is a constant for the Aliyun cloud provider.
+	CloudProviderAliyun CloudProvider = "aliyun"
 	// CloudProviderLocal is a constant for the local development provider.
 	CloudProviderLocal CloudProvider = "local"
 )

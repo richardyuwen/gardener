@@ -68,6 +68,17 @@ var _ = Describe("helper", func() {
 			Expect(cloudProvider).To(Equal(garden.CloudProviderOpenStack))
 		})
 
+		It("should return cloud provider Aliyun", func() {
+			spec := garden.CloudProfileSpec{
+				Aliyun: &garden.AliyunProfile{},
+			}
+
+			cloudProvider, err := DetermineCloudProviderInProfile(spec)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cloudProvider).To(Equal(garden.CloudProviderAliyun))
+		})
+
 		It("should return an error because no cloud provider is set", func() {
 			spec := garden.CloudProfileSpec{}
 
@@ -131,6 +142,17 @@ var _ = Describe("helper", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cloudProvider).To(Equal(garden.CloudProviderOpenStack))
+		})
+
+		It("should return cloud provider Aliyun", func() {
+			cloud := garden.Cloud{
+				Aliyun: &garden.AliyunCloud{},
+			}
+
+			cloudProvider, err := DetermineCloudProviderInShoot(cloud)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cloudProvider).To(Equal(garden.CloudProviderAliyun))
 		})
 
 		It("should return an error because no cloud provider is set", func() {

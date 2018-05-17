@@ -50,6 +50,10 @@ func DetermineCloudProviderInProfile(spec gardenv1beta1.CloudProfileSpec) (garde
 		numClouds++
 		cloud = gardenv1beta1.CloudProviderOpenStack
 	}
+	if spec.Aliyu != nil {
+		numClouds++
+		cloud = gardenv1beta1.CloudProviderAliyun
+	}
 	if spec.Local != nil {
 		numClouds++
 		cloud = gardenv1beta1.CloudProviderLocal
@@ -84,6 +88,10 @@ func DetermineCloudProviderInShoot(cloudObj gardenv1beta1.Cloud) (gardenv1beta1.
 	if cloudObj.OpenStack != nil {
 		numClouds++
 		cloud = gardenv1beta1.CloudProviderOpenStack
+	}
+	if cloudObj.Aliyun != nil {
+		numClouds++
+		cloud = gardenv1beta1.CloudProviderAliyun
 	}
 	if cloudObj.Local != nil {
 		numClouds++
@@ -212,6 +220,13 @@ func DetermineMachineImage(cloudProfile gardenv1beta1.CloudProfile, name gardenv
 				return true, &ptr, nil
 			}
 		}
+	case gardenv1beta1.CloudProviderAliyun:
+		for _, image := range cloudProfile.Spec.Aliyun.Constraints.MachineImages {
+			if image.Name == name {
+				ptr := image
+				return true, &ptr, nil
+			}
+		}
 	default:
 		return false, nil, fmt.Errorf("unknown cloud provider %s", cloudProvider)
 	}
@@ -248,6 +263,10 @@ func DetermineLatestKubernetesVersion(cloudProfile gardenv1beta1.CloudProfile, c
 		}
 	case gardenv1beta1.CloudProviderOpenStack:
 		for _, version := range cloudProfile.Spec.OpenStack.Constraints.Kubernetes.Versions {
+			versions = append(versions, version)
+		}
+	case gardenv1beta1.CloudProviderAliyun:
+		for _, version := range cloudProfile.Spec.Aliyun.Constraints.Kubernetes.Versions {
 			versions = append(versions, version)
 		}
 	default:

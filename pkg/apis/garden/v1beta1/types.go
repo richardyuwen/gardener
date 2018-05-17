@@ -67,6 +67,9 @@ type CloudProfileSpec struct {
 	// OpenStack is the profile specification for the OpenStack cloud.
 	// +optional
 	OpenStack *OpenStackProfile `json:"openstack,omitempty"`
+	// Aliyun is the profile specification for the Aliyun cloud.
+	// +optional
+	Aliyun *AliyunProfile `json:"aliyun,omitempty"`
 	// Local is the profile specification for the Local provider.
 	// +optional
 	Local *LocalProfile `json:"local,omitempty"`
@@ -247,6 +250,37 @@ type OpenStackMachineImage struct {
 	// Name is the name of the image.
 	Name MachineImageName `json:"name"`
 	// Image is the technical name of the image.
+	Image string `json:"image"`
+}
+
+// AliyunProfile defines certain constraints and definitions for the Aliyun cloud.
+type AliyunProfile struct {
+	// Constraints is an object containing constraints for certain values in the Shoot specification.
+	Constraints AliyunConstraints `json:"constraints"`
+}
+
+// AliyunConstraints is an object containing constraints for certain values in the Shoot specification.
+type AliyunConstraints struct {
+	// DNSProviders contains constraints regarding allowed values of the 'dns.provider' block in the Shoot specification.
+	DNSProviders []DNSProviderConstraint `json:"dnsProviders"`
+	// Kubernetes contains constraints regarding allowed values of the 'kubernetes' block in the Shoot specification.
+	Kubernetes KubernetesConstraints `json:"kubernetes"`
+	// MachineImages contains constraints regarding allowed values for machine images in the Shoot specification.
+	MachineImages []AliyunMachineImage `json:"machineImages"`
+	// MachineTypes contains constraints regarding allowed values for machine types in the 'workers' block in the Shoot specification.
+	MachineTypes []MachineType `json:"machineTypes"`
+	// VolumeTypes contains constraints regarding allowed values for volume types in the 'workers' block in the Shoot specification.
+	VolumeTypes []VolumeType `json:"volumeTypes"`
+	// Zones contains constraints regarding allowed values for 'zones' block in the Shoot specification.
+	Zones []Zone `json:"zones"`
+}
+
+// AliyunMachineImage defines the name of the machine image in the Aliyun environment.
+type AliyunMachineImage struct {
+	// Name is the name of the image.
+	Name MachineImageName `json:"name"`
+	// Image is the technical name of the image. It contains the image name and the Google Cloud project.
+	// Example: projects/coreos-cloud/global/images/coreos-stable-1576-5-0-v20180105
 	Image string `json:"image"`
 }
 
@@ -587,6 +621,9 @@ type Cloud struct {
 	// OpenStack contains the Shoot specification for the OpenStack cloud.
 	// +optional
 	OpenStack *OpenStackCloud `json:"openstack,omitempty"`
+	// Aliyun contains the Shoot specification for the Aliyun cloud.
+	// +optional
+	Aliyun *AliyunCloud `json:"Aliyun,omitempty"`
 	// Local contains the Shoot specification for the Local local provider.
 	// +optional
 	Local *Local `json:"local,omitempty"`
@@ -783,6 +820,46 @@ type OpenStackWorker struct {
 	Worker `json:",inline"`
 }
 
+// AliyunCloud contains the Shoot specification for Aliyun.
+type AliyunCloud struct {
+	// MachineImage holds information about the machine image to use for all workers.
+	// It will default to the first image stated in the referenced CloudProfile if no
+	// value has been provided.
+	// +optional
+	MachineImage *GCPMachineImage `json:"machineImage,omitempty"`
+	// Networks holds information about the Kubernetes and infrastructure networks.
+	Networks AliyunNetworks `json:"networks"`
+	// Workers is a list of worker groups.
+	Workers []AliyunWorker `json:"workers"`
+	// Zones is a list of availability zones to deploy the Shoot cluster to.
+	Zones []string `json:"zones"`
+}
+
+// AliyunNetworks holds information about the Kubernetes and infrastructure networks.
+type AliyunNetworks struct {
+	K8SNetworks `json:",inline"`
+	// VPC indicates whether to use an existing VPC or create a new one.
+	// +optional
+	VPC *AliyunVPC `json:"vpc,omitempty"`
+	// Workers is a list of CIDRs of worker subnets (private) to create (used for the VMs).
+	Workers []CIDR `json:"workers"`
+}
+
+// AliyunVPC indicates whether to use an existing VPC or create a new one.
+type AliyunVPC struct {
+	// Name is the name of an existing Aliyun VPC.
+	Name string `json:"name"`
+}
+
+// AliyunWorker is the definition of a worker group.
+type AliyunWorker struct {
+	Worker `json:",inline"`
+	// VolumeType is the type of the root volumes.
+	VolumeType string `json:"volumeType"`
+	// VolumeSize is the size of the root volume.
+	VolumeSize string `json:"volumeSize"`
+}
+
 // Local contains the Shoot specification for local provider.
 type Local struct {
 	// Networks holds information about the Kubernetes and infrastructure networks.
@@ -945,6 +1022,8 @@ const (
 	CloudProviderGCP CloudProvider = "gcp"
 	// CloudProviderOpenStack is a constant for the OpenStack cloud provider.
 	CloudProviderOpenStack CloudProvider = "openstack"
+	// CloudProviderAliyun is a constant for the Aliyun cloud provider.
+	CloudProviderAliyun CloudProvider = "aliyun"
 	// CloudProviderLocal is a constant for the development provider.
 	CloudProviderLocal CloudProvider = "local"
 )

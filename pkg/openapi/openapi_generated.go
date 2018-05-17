@@ -492,6 +492,307 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 			Dependencies: []string{
 				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.ClusterAutoscaler", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.Heapster", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.Kube2IAM", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.KubeLego", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.KubernetesDashboard", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.Monocular", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.NginxIngress"},
 		},
+		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunCloud": {
+			Schema: spec.Schema{
+				SchemaProps: spec.SchemaProps{
+					Description: "AliyunCloud contains the Shoot specification for Aliyun.",
+					Properties: map[string]spec.Schema{
+						"machineImage": {
+							SchemaProps: spec.SchemaProps{
+								Description: "MachineImage holds information about the machine image to use for all workers. It will default to the first image stated in the referenced CloudProfile if no value has been provided.",
+								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.GCPMachineImage"),
+							},
+						},
+						"networks": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Networks holds information about the Kubernetes and infrastructure networks.",
+								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunNetworks"),
+							},
+						},
+						"workers": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Workers is a list of worker groups.",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Ref: ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunWorker"),
+										},
+									},
+								},
+							},
+						},
+						"zones": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Zones is a list of availability zones to deploy the Shoot cluster to.",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Type:   []string{"string"},
+											Format: "",
+										},
+									},
+								},
+							},
+						},
+					},
+					Required: []string{"networks", "workers", "zones"},
+				},
+			},
+			Dependencies: []string{
+				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunNetworks", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunWorker", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.GCPMachineImage"},
+		},
+		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunConstraints": {
+			Schema: spec.Schema{
+				SchemaProps: spec.SchemaProps{
+					Description: "AliyunConstraints is an object containing constraints for certain values in the Shoot specification.",
+					Properties: map[string]spec.Schema{
+						"dnsProviders": {
+							SchemaProps: spec.SchemaProps{
+								Description: "DNSProviders contains constraints regarding allowed values of the 'dns.provider' block in the Shoot specification.",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Ref: ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.DNSProviderConstraint"),
+										},
+									},
+								},
+							},
+						},
+						"kubernetes": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Kubernetes contains constraints regarding allowed values of the 'kubernetes' block in the Shoot specification.",
+								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.KubernetesConstraints"),
+							},
+						},
+						"machineImages": {
+							SchemaProps: spec.SchemaProps{
+								Description: "MachineImages contains constraints regarding allowed values for machine images in the Shoot specification.",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Ref: ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunMachineImage"),
+										},
+									},
+								},
+							},
+						},
+						"machineTypes": {
+							SchemaProps: spec.SchemaProps{
+								Description: "MachineTypes contains constraints regarding allowed values for machine types in the 'workers' block in the Shoot specification.",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Ref: ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.MachineType"),
+										},
+									},
+								},
+							},
+						},
+						"volumeTypes": {
+							SchemaProps: spec.SchemaProps{
+								Description: "VolumeTypes contains constraints regarding allowed values for volume types in the 'workers' block in the Shoot specification.",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Ref: ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.VolumeType"),
+										},
+									},
+								},
+							},
+						},
+						"zones": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Zones contains constraints regarding allowed values for 'zones' block in the Shoot specification.",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Ref: ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.Zone"),
+										},
+									},
+								},
+							},
+						},
+					},
+					Required: []string{"dnsProviders", "kubernetes", "machineImages", "machineTypes", "volumeTypes", "zones"},
+				},
+			},
+			Dependencies: []string{
+				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunMachineImage", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.DNSProviderConstraint", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.KubernetesConstraints", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.MachineType", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.VolumeType", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.Zone"},
+		},
+		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunMachineImage": {
+			Schema: spec.Schema{
+				SchemaProps: spec.SchemaProps{
+					Description: "AliyunMachineImage defines the name of the machine image in the Aliyun environment.",
+					Properties: map[string]spec.Schema{
+						"name": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Name is the name of the image.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+						"image": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Image is the technical name of the image. It contains the image name and the Google Cloud project. Example: projects/coreos-cloud/global/images/coreos-stable-1576-5-0-v20180105",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+					},
+					Required: []string{"name", "image"},
+				},
+			},
+			Dependencies: []string{},
+		},
+		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunNetworks": {
+			Schema: spec.Schema{
+				SchemaProps: spec.SchemaProps{
+					Description: "AliyunNetworks holds information about the Kubernetes and infrastructure networks.",
+					Properties: map[string]spec.Schema{
+						"nodes": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Nodes is the CIDR of the node network.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+						"pods": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Pods is the CIDR of the pod network.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+						"services": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Services is the CIDR of the service network.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+						"vpc": {
+							SchemaProps: spec.SchemaProps{
+								Description: "VPC indicates whether to use an existing VPC or create a new one.",
+								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunVPC"),
+							},
+						},
+						"workers": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Workers is a list of CIDRs of worker subnets (private) to create (used for the VMs).",
+								Type:        []string{"array"},
+								Items: &spec.SchemaOrArray{
+									Schema: &spec.Schema{
+										SchemaProps: spec.SchemaProps{
+											Type:   []string{"string"},
+											Format: "",
+										},
+									},
+								},
+							},
+						},
+					},
+					Required: []string{"workers"},
+				},
+			},
+			Dependencies: []string{
+				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunVPC"},
+		},
+		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunProfile": {
+			Schema: spec.Schema{
+				SchemaProps: spec.SchemaProps{
+					Description: "AliyunProfile defines certain constraints and definitions for the Aliyun cloud.",
+					Properties: map[string]spec.Schema{
+						"constraints": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Constraints is an object containing constraints for certain values in the Shoot specification.",
+								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunConstraints"),
+							},
+						},
+					},
+					Required: []string{"constraints"},
+				},
+			},
+			Dependencies: []string{
+				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunConstraints"},
+		},
+		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunVPC": {
+			Schema: spec.Schema{
+				SchemaProps: spec.SchemaProps{
+					Description: "AliyunVPC indicates whether to use an existing VPC or create a new one.",
+					Properties: map[string]spec.Schema{
+						"name": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Name is the name of an existing Aliyun VPC.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+					},
+					Required: []string{"name"},
+				},
+			},
+			Dependencies: []string{},
+		},
+		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunWorker": {
+			Schema: spec.Schema{
+				SchemaProps: spec.SchemaProps{
+					Description: "AliyunWorker is the definition of a worker group.",
+					Properties: map[string]spec.Schema{
+						"name": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Name is the name of the worker group.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+						"machineType": {
+							SchemaProps: spec.SchemaProps{
+								Description: "MachineType is the machine type of the worker group.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+						"autoScalerMin": {
+							SchemaProps: spec.SchemaProps{
+								Description: "AutoScalerMin is the minimum number of VMs to create.",
+								Type:        []string{"integer"},
+								Format:      "int32",
+							},
+						},
+						"autoScalerMax": {
+							SchemaProps: spec.SchemaProps{
+								Description: "AutoScalerMin is the maximum number of VMs to create.",
+								Type:        []string{"integer"},
+								Format:      "int32",
+							},
+						},
+						"volumeType": {
+							SchemaProps: spec.SchemaProps{
+								Description: "VolumeType is the type of the root volumes.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+						"volumeSize": {
+							SchemaProps: spec.SchemaProps{
+								Description: "VolumeSize is the size of the root volume.",
+								Type:        []string{"string"},
+								Format:      "",
+							},
+						},
+					},
+					Required: []string{"name", "machineType", "autoScalerMin", "autoScalerMax", "volumeType", "volumeSize"},
+				},
+			},
+			Dependencies: []string{},
+		},
 		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AzureCloud": {
 			Schema: spec.Schema{
 				SchemaProps: spec.SchemaProps{
@@ -942,6 +1243,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.OpenStackCloud"),
 							},
 						},
+						"Aliyun": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Aliyun contains the Shoot specification for the Aliyun cloud.",
+								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunCloud"),
+							},
+						},
 						"local": {
 							SchemaProps: spec.SchemaProps{
 								Description: "Local contains the Shoot specification for the Local local provider.",
@@ -953,7 +1260,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 				},
 			},
 			Dependencies: []string{
-				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AWSCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.AzureCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.GCPCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.Local", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.OpenStackCloud", "k8s.io/api/core/v1.LocalObjectReference"},
+				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AWSCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.AzureCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.GCPCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.Local", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.OpenStackCloud", "k8s.io/api/core/v1.LocalObjectReference"},
 		},
 		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.CloudProfile": {
 			Schema: spec.Schema{
@@ -1066,6 +1373,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.OpenStackProfile"),
 							},
 						},
+						"aliyun": {
+							SchemaProps: spec.SchemaProps{
+								Description: "Aliyun is the profile specification for the Aliyun cloud.",
+								Ref:         ref("github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunProfile"),
+							},
+						},
 						"local": {
 							SchemaProps: spec.SchemaProps{
 								Description: "Local is the profile specification for the Local provider.",
@@ -1083,7 +1396,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 				},
 			},
 			Dependencies: []string{
-				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AWSProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.AzureProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.GCPProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.LocalProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.OpenStackProfile"},
+				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.AWSProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.AliyunProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.AzureProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.GCPProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.LocalProfile", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.OpenStackProfile"},
 		},
 		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.ClusterAutoscaler": {
 			Schema: spec.Schema{
@@ -2924,7 +3237,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 						"secretRef": {
 							SchemaProps: spec.SchemaProps{
 								Description: "SecretRef is a reference to a secret object in the same or another namespace.",
-								Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
+								Ref:         ref("k8s.io/api/core/v1.SecretReference"),
 							},
 						},
 						"quotas": {
@@ -2945,7 +3258,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 				},
 			},
 			Dependencies: []string{
-				"k8s.io/api/core/v1.ObjectReference", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+				"k8s.io/api/core/v1.ObjectReference", "k8s.io/api/core/v1.SecretReference", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 		},
 		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.SecretBindingList": {
 			Schema: spec.Schema{
@@ -3163,7 +3476,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 						"secretRef": {
 							SchemaProps: spec.SchemaProps{
 								Description: "SecretRef is a reference to a Secret object containing the Kubeconfig and the cloud provider credentials for the account the Seed cluster has been deployed to.",
-								Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
+								Ref:         ref("k8s.io/api/core/v1.SecretReference"),
 							},
 						},
 						"networks": {
@@ -3191,7 +3504,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 				},
 			},
 			Dependencies: []string{
-				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.SeedCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.SeedNetworks", "k8s.io/api/core/v1.ObjectReference"},
+				"github.com/gardener/gardener/pkg/apis/garden/v1beta1.SeedCloud", "github.com/gardener/gardener/pkg/apis/garden/v1beta1.SeedNetworks", "k8s.io/api/core/v1.SecretReference"},
 		},
 		"github.com/gardener/gardener/pkg/apis/garden/v1beta1.SeedStatus": {
 			Schema: spec.Schema{

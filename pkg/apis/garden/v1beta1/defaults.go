@@ -96,6 +96,18 @@ func SetDefaults_Shoot(obj *Shoot) {
 		}
 	}
 
+	if cloud.Aliyun != nil {
+		if cloud.Aliyun.Networks.Pods == nil {
+			obj.Spec.Cloud.Aliyun.Networks.Pods = &defaultPodCIDR
+		}
+		if cloud.Aliyun.Networks.Services == nil {
+			obj.Spec.Cloud.Aliyun.Networks.Services = &defaultServiceCIDR
+		}
+		if cloud.Aliyun.Networks.Nodes == nil {
+			obj.Spec.Cloud.Aliyun.Networks.Nodes = &cloud.Aliyun.Networks.Workers[0]
+		}
+	}
+
 	if cloud.Local != nil {
 		if cloud.Local.Networks.Pods == nil {
 			obj.Spec.Cloud.Local.Networks.Pods = &defaultPodCIDR

@@ -44,6 +44,10 @@ func DetermineCloudProviderInProfile(spec garden.CloudProfileSpec) (garden.Cloud
 		numClouds++
 		cloud = garden.CloudProviderOpenStack
 	}
+	if spec.Aliyun != nil {
+		numClouds++
+		cloud = garden.CloudProviderAliyun
+	}
 	if spec.Local != nil {
 		numClouds++
 		cloud = garden.CloudProviderLocal
@@ -78,6 +82,10 @@ func DetermineCloudProviderInShoot(cloudObj garden.Cloud) (garden.CloudProvider,
 	if cloudObj.OpenStack != nil {
 		numClouds++
 		cloud = garden.CloudProviderOpenStack
+	}
+	if cloudObj.Aliyun != nil {
+		numClouds++
+		cloud = garden.CloudProviderAliyun
 	}
 	if cloudObj.Local != nil {
 		numClouds++
