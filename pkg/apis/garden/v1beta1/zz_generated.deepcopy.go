@@ -374,7 +374,9 @@ func (in *AliyunCloud) DeepCopyInto(out *AliyunCloud) {
 	if in.Workers != nil {
 		in, out := &in.Workers, &out.Workers
 		*out = make([]AliyunWorker, len(*in))
-		copy(*out, *in)
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 	if in.Zones != nil {
 		in, out := &in.Zones, &out.Zones
@@ -524,6 +526,24 @@ func (in *AliyunVPC) DeepCopy() *AliyunVPC {
 func (in *AliyunWorker) DeepCopyInto(out *AliyunWorker) {
 	*out = *in
 	out.Worker = in.Worker
+	if in.InternetMaxBandwidthIn != nil {
+		in, out := &in.InternetMaxBandwidthIn, &out.InternetMaxBandwidthIn
+		if *in == nil {
+			*out = nil
+		} else {
+			*out = new(int)
+			**out = **in
+		}
+	}
+	if in.InternetMaxBandwidthOut != nil {
+		in, out := &in.InternetMaxBandwidthOut, &out.InternetMaxBandwidthOut
+		if *in == nil {
+			*out = nil
+		} else {
+			*out = new(int)
+			**out = **in
+		}
+	}
 	return
 }
 

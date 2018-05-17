@@ -50,7 +50,7 @@ func DetermineCloudProviderInProfile(spec gardenv1beta1.CloudProfileSpec) (garde
 		numClouds++
 		cloud = gardenv1beta1.CloudProviderOpenStack
 	}
-	if spec.Aliyu != nil {
+	if spec.Aliyun != nil {
 		numClouds++
 		cloud = gardenv1beta1.CloudProviderAliyun
 	}

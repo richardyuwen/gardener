@@ -858,6 +858,10 @@ type AliyunWorker struct {
 	VolumeType string `json:"volumeType"`
 	// VolumeSize is the size of the root volume.
 	VolumeSize string `json:"volumeSize"`
+	// InternetBandwidthIn is the max inflow internet bandwidth of the worker
+	InternetMaxBandwidthIn *int `json:"internetMaxBandwidthIn,omitempty"`
+	// InternetBandwidthOut is the max outflow internet bandwidth of the worker
+	InternetMaxBandwidthOut *int `json:"internetMaxBandwidthOut,omitempty"`
 }
 
 // Local contains the Shoot specification for local provider.

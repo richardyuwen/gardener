@@ -682,6 +682,8 @@ func autoConvert_v1beta1_AliyunWorker_To_garden_AliyunWorker(in *AliyunWorker, o
 	}
 	out.VolumeType = in.VolumeType
 	out.VolumeSize = in.VolumeSize
+	out.InternetMaxBandwidthIn = (*int)(unsafe.Pointer(in.InternetMaxBandwidthIn))
+	out.InternetMaxBandwidthOut = (*int)(unsafe.Pointer(in.InternetMaxBandwidthOut))
 	return nil
 }
 
@@ -696,6 +698,8 @@ func autoConvert_garden_AliyunWorker_To_v1beta1_AliyunWorker(in *garden.AliyunWo
 	}
 	out.VolumeType = in.VolumeType
 	out.VolumeSize = in.VolumeSize
+	out.InternetMaxBandwidthIn = (*int)(unsafe.Pointer(in.InternetMaxBandwidthIn))
+	out.InternetMaxBandwidthOut = (*int)(unsafe.Pointer(in.InternetMaxBandwidthOut))
 	return nil
 }
 

@@ -876,6 +876,10 @@ type AliyunWorker struct {
 	VolumeType string
 	// VolumeSize is the size of the root volume.
 	VolumeSize string
+	// InternetBandwidthIn is the max inflow internet bandwidth of the worker
+	InternetMaxBandwidthIn *int
+	// InternetBandwidthOut is the max outflow internet bandwidth of the worker
+	InternetMaxBandwidthOut *int
 }
 
 

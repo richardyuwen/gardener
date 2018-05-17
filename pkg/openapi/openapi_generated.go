@@ -787,6 +787,20 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 								Format:      "",
 							},
 						},
+						"internetMaxBandwidthIn": {
+							SchemaProps: spec.SchemaProps{
+								Description: "InternetBandwidthIn is the max inflow internet bandwidth of the worker",
+								Type:        []string{"integer"},
+								Format:      "int32",
+							},
+						},
+						"internetMaxBandwidthOut": {
+							SchemaProps: spec.SchemaProps{
+								Description: "InternetBandwidthOut is the max outflow internet bandwidth of the worker",
+								Type:        []string{"integer"},
+								Format:      "int32",
+							},
+						},
 					},
 					Required: []string{"name", "machineType", "autoScalerMin", "autoScalerMax", "volumeType", "volumeSize"},
 				},
