@@ -29,15 +29,27 @@ const (
 	// is being downloaded from the cloud-config-downloader process)
 	CloudConfigPrefix = "cloud-config"
 
+	// CloudProviderSecretName is the name of the secret containing the cloud provider credentials.
+	CloudProviderSecretName = "cloudprovider"
+
+	// CloudProviderConfigName is the name of the configmap containing the cloud provider config.
+	CloudProviderConfigName = "cloud-provider-config"
+
+	// CloudProviderConfigMapKey is the key storing the cloud provider config as value in the cloud provider configmap.
+	CloudProviderConfigMapKey = "cloudprovider.conf"
+
 	// CloudPurposeShoot is a constant used while instantiating a cloud botanist for the Shoot cluster.
 	CloudPurposeShoot = "shoot"
 
 	// CloudPurposeSeed is a constant used while instantiating a cloud botanist for the Seed cluster.
 	CloudPurposeSeed = "seed"
 
-	// ConfirmationDeletionTimestamp is an annotation on a Shoot resource whose value must be set equal to the Shoot's
-	// '.metadata.deletionTimestamp' value to trigger the deletion process of the Shoot cluster.
-	ConfirmationDeletionTimestamp = "confirmation.garden.sapcloud.io/deletionTimestamp"
+	// ClusterAutoscalerDeploymentName is the name of the cluster-autoscaler deployment.
+	ClusterAutoscalerDeploymentName = "cluster-autoscaler"
+
+	// ConfirmationDeletion is an annotation on a Shoot resource whose value must be set to "true" in order to
+	// allow deleting the Shoot (if the annotation is not set any DELETE request will be denied).
+	ConfirmationDeletion = "confirmation.garden.sapcloud.io/deletion"
 
 	// ControllerManagerInternalConfigMapName is the name of the internal config map in which the Gardener controller
 	// manager stores its configuration.
@@ -69,6 +81,9 @@ const (
 	// GardenRole is the key for an annotation on a Kubernetes object indicating what it is used for.
 	GardenRole = "garden.sapcloud.io/role"
 
+	// GardenRoleShoot is the value of the GardenRole key indicating type 'shoot'.
+	GardenRoleShoot = "shoot"
+
 	// GardenRoleSeed is the value of the GardenRole key indicating type 'seed'.
 	GardenRoleSeed = "seed"
 
@@ -89,6 +104,9 @@ const (
 
 	//GardenRoleProject is the value of GardenRole key indicating type 'project'.
 	GardenRoleProject = "project"
+
+	//GardenRoleBackup is the value of GardenRole key indicating type 'backup'.
+	GardenRoleBackup = "backup"
 
 	// GardenCreatedBy is the key for an annotation of a Shoot cluster whose value indicates contains the username
 	// of the user that created the resource.
@@ -113,6 +131,12 @@ const (
 
 	// KubeAPIServerDeploymentName is the name of the kube-apiserver deployment.
 	KubeAPIServerDeploymentName = "kube-apiserver"
+
+	// KubeControllerManagerDeploymentName is the name of the kube-controller-manager deployment.
+	KubeControllerManagerDeploymentName = "kube-controller-manager"
+
+	// KubeSchedulerDeploymentName is the name of the kube-scheduler deployment.
+	KubeSchedulerDeploymentName = "kube-scheduler"
 
 	// KubeAddonManagerDeploymentName is the name of the kube-addon-manager deployment.
 	KubeAddonManagerDeploymentName = "kube-addon-manager"
@@ -183,6 +207,9 @@ const (
 	// ignored completely. That means that the Shoot will never reach the reconciliation flow (independent of the operation (create/update/
 	// delete)).
 	ShootIgnore = "shoot.garden.sapcloud.io/ignore"
+
+	// BackupNamespacePrefix is a constant for backup namespace created for shoot's backup infrastructure related resources.
+	BackupNamespacePrefix = "backup"
 )
 
 // CloudConfigUserDataConfig is a struct containing cloud-specific configuration required to

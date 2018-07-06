@@ -17,12 +17,14 @@ package operation
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/externalversions/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	machineclientset "github.com/gardener/gardener/pkg/client/machine/clientset/versioned"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/operation/garden"
 	"github.com/gardener/gardener/pkg/operation/seed"
@@ -35,15 +37,15 @@ import (
 
 // New creates a new operation object with a Shoot resource object.
 func New(shoot *gardenv1beta1.Shoot, logger *logrus.Entry, k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface, gardenerInfo *gardenv1beta1.Gardener, secretsMap map[string]*corev1.Secret, imageVector imagevector.ImageVector) (*Operation, error) {
-	return newOperation(logger, k8sGardenClient, k8sGardenInformers, gardenerInfo, secretsMap, imageVector, shoot.Namespace, *(shoot.Spec.Cloud.Seed), shoot)
+	return newOperation(logger, k8sGardenClient, k8sGardenInformers, gardenerInfo, secretsMap, imageVector, shoot.Namespace, *(shoot.Spec.Cloud.Seed), shoot, nil)
 }
 
-// NewWithoutShoot creates a new operation object without a Shoot resource object.
-func NewWithoutShoot(logger *logrus.Entry, k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface, gardenerInfo *gardenv1beta1.Gardener, secretsMap map[string]*corev1.Secret, imageVector imagevector.ImageVector, namespace, seedName string) (*Operation, error) {
-	return newOperation(logger, k8sGardenClient, k8sGardenInformers, gardenerInfo, secretsMap, imageVector, namespace, seedName, nil)
+// NewWithBackupInfrastructure creates a new operation object without a Shoot resource object but the BackupInfrastructure resource.
+func NewWithBackupInfrastructure(backupInfrastructure *gardenv1beta1.BackupInfrastructure, logger *logrus.Entry, k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface, gardenerInfo *gardenv1beta1.Gardener, secretsMap map[string]*corev1.Secret, imageVector imagevector.ImageVector) (*Operation, error) {
+	return newOperation(logger, k8sGardenClient, k8sGardenInformers, gardenerInfo, secretsMap, imageVector, backupInfrastructure.Namespace, backupInfrastructure.Spec.Seed, nil, backupInfrastructure)
 }
 
-func newOperation(logger *logrus.Entry, k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface, gardenerInfo *gardenv1beta1.Gardener, secretsMap map[string]*corev1.Secret, imageVector imagevector.ImageVector, namespace, seedName string, shoot *gardenv1beta1.Shoot) (*Operation, error) {
+func newOperation(logger *logrus.Entry, k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface, gardenerInfo *gardenv1beta1.Gardener, secretsMap map[string]*corev1.Secret, imageVector imagevector.ImageVector, namespace, seedName string, shoot *gardenv1beta1.Shoot, backupInfrastructure *gardenv1beta1.BackupInfrastructure) (*Operation, error) {
 	secrets := make(map[string]*corev1.Secret)
 	for k, v := range secretsMap {
 		secrets[k] = v
@@ -59,16 +61,18 @@ func newOperation(logger *logrus.Entry, k8sGardenClient kubernetes.Client, k8sGa
 	}
 
 	operation := &Operation{
-		Logger:              logger,
-		GardenerInfo:        gardenerInfo,
-		Secrets:             secrets,
-		ImageVector:         imageVector,
-		CheckSums:           make(map[string]string),
-		Garden:              gardenObj,
-		Seed:                seedObj,
-		K8sGardenClient:     k8sGardenClient,
-		K8sGardenInformers:  k8sGardenInformers,
-		ChartGardenRenderer: chartrenderer.New(k8sGardenClient),
+		Logger:               logger,
+		GardenerInfo:         gardenerInfo,
+		Secrets:              secrets,
+		ImageVector:          imageVector,
+		CheckSums:            make(map[string]string),
+		Garden:               gardenObj,
+		Seed:                 seedObj,
+		K8sGardenClient:      k8sGardenClient,
+		K8sGardenInformers:   k8sGardenInformers,
+		ChartGardenRenderer:  chartrenderer.New(k8sGardenClient),
+		BackupInfrastructure: backupInfrastructure,
+		MachineDeployments:   MachineDeployments{},
 	}
 
 	if shoot != nil {
@@ -96,10 +100,15 @@ func (o *Operation) InitializeSeedClients() error {
 	if err != nil {
 		return err
 	}
-	chartSeedRenderer := chartrenderer.New(k8sSeedClient)
+	// Create a MachineV1alpha1Client and the respective API group scheme for the Machine API group.
+	machineClientset, err := machineclientset.NewForConfig(k8sSeedClient.GetConfig())
+	if err != nil {
+		return err
+	}
+	k8sSeedClient.SetMachineClientset(machineClientset)
 
 	o.K8sSeedClient = k8sSeedClient
-	o.ChartSeedRenderer = chartSeedRenderer
+	o.ChartSeedRenderer = chartrenderer.New(k8sSeedClient)
 	return nil
 }
 
@@ -116,10 +125,9 @@ func (o *Operation) InitializeShootClients() error {
 	if err != nil {
 		return err
 	}
-	chartShootRenderer := chartrenderer.New(k8sShootClient)
 
 	o.K8sShootClient = k8sShootClient
-	o.ChartShootRenderer = chartShootRenderer
+	o.ChartShootRenderer = chartrenderer.New(k8sShootClient)
 	return nil
 }
 
@@ -153,13 +161,40 @@ func (o *Operation) GetSecretKeysOfRole(kind string) []string {
 // ReportShootProgress will update the last operation object in the Shoot manifest `status` section
 // by the current progress of the Flow execution.
 func (o *Operation) ReportShootProgress(progress int, currentFunctions string) {
-	o.Shoot.Info.Status.LastOperation.Description = "Currently executing " + currentFunctions
+	description := fmt.Sprintf("Executing %s.", sanitizeFunctionNames(currentFunctions))
+	if progress == 100 {
+		description = "Execution finished."
+	}
+
+	o.Shoot.Info.Status.LastOperation.Description = description
 	o.Shoot.Info.Status.LastOperation.Progress = progress
 	o.Shoot.Info.Status.LastOperation.LastUpdateTime = metav1.Now()
 
 	if newShoot, err := o.K8sGardenClient.GardenClientset().GardenV1beta1().Shoots(o.Shoot.Info.Namespace).UpdateStatus(o.Shoot.Info); err == nil {
 		o.Shoot.Info = newShoot
 	}
+}
+
+// ReportBackupInfrastructureProgress will update the phase and error in the BackupInfrastructure manifest `status` section
+// by the current progress of the Flow execution.
+func (o *Operation) ReportBackupInfrastructureProgress(progress int, currentFunctions string) {
+	description := fmt.Sprintf("Executing %s.", sanitizeFunctionNames(currentFunctions))
+	if progress == 100 {
+		description = "Execution finished."
+	}
+
+	o.BackupInfrastructure.Status.LastOperation.Description = description
+	o.BackupInfrastructure.Status.LastOperation.Progress = progress
+	o.BackupInfrastructure.Status.LastOperation.LastUpdateTime = metav1.Now()
+
+	if newBackupInfrastructure, err := o.K8sGardenClient.GardenClientset().GardenV1beta1().BackupInfrastructures(o.BackupInfrastructure.Namespace).UpdateStatus(o.BackupInfrastructure); err == nil {
+		o.BackupInfrastructure = newBackupInfrastructure
+	}
+}
+
+func sanitizeFunctionNames(functions string) string {
+	re := regexp.MustCompile(`\([^)]*\)\.`)
+	return re.ReplaceAllString(functions, "")
 }
 
 // InjectImages injects images from the image vector into the provided <values> map.
@@ -215,10 +250,10 @@ func constructInternalDomain(shootName, shootProject, internalDomain string) str
 	return fmt.Sprintf("api.%s.%s.%s.%s", shootName, shootProject, common.InternalDomainKey, internalDomain)
 }
 
-// NameContainedInMachineDeploymentList checks whether the <name> is part of the <machineDeployments>
+// ContainsName checks whether the <name> is part of the <machineDeployments>
 // list, i.e. whether there is an entry whose 'Name' attribute matches <name>. It returns true or false.
-func NameContainedInMachineDeploymentList(name string, machineDeployments []MachineDeployment) bool {
-	for _, deployment := range machineDeployments {
+func (m MachineDeployments) ContainsName(name string) bool {
+	for _, deployment := range m {
 		if name == deployment.Name {
 			return true
 		}
@@ -226,10 +261,10 @@ func NameContainedInMachineDeploymentList(name string, machineDeployments []Mach
 	return false
 }
 
-// ClassContainedInMachineDeploymentList checks whether the <className> is part of the <machineDeployments>
+// ContainsClass checks whether the <className> is part of the <machineDeployments>
 // list, i.e. whether there is an entry whose 'ClassName' attribute matches <name>. It returns true or false.
-func ClassContainedInMachineDeploymentList(className string, machineDeployments []MachineDeployment) bool {
-	for _, deployment := range machineDeployments {
+func (m MachineDeployments) ContainsClass(className string) bool {
+	for _, deployment := range m {
 		if className == deployment.ClassName {
 			return true
 		}

@@ -34,7 +34,6 @@ start-api:
 	@go run cmd/gardener-apiserver/main.go \
 			--authentication-kubeconfig ~/.kube/config \
 			--authorization-kubeconfig ~/.kube/config \
-			--enable-admission-plugins=ResourceReferenceManager,ShootSeedManager,ShootDNSHostedZone,ShootValidator,ShootQuotaValidator \
 			--etcd-servers=http://$(shell minikube ip):32379 \
 			--kubeconfig ~/.kube/config \
 			--tls-cert-file ~/.minikube/apiserver.crt \
@@ -47,7 +46,7 @@ start:
 	@KUBECONFIG=~/.kube/config GARDENER_KUBECONFIG=~/.kube/config go run \
 			-ldflags "-w -X github.com/gardener/gardener/pkg/version.Version=$(shell ./hack/get-next-version)" \
 			cmd/gardener-controller-manager/main.go \
-			--config=dev/componentconfig-gardener-controller-manager.yaml
+			--config=dev/20-componentconfig-gardener-controller-manager.yaml
 
 .PHONY: start-local
 start-local:

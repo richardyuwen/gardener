@@ -20,6 +20,7 @@ import (
 
 	"github.com/gardener/gardener/pkg/apis/componentconfig"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
+	"github.com/gardener/gardener/pkg/apis/garden/v1beta1/helper"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/externalversions"
 	gardenlisters "github.com/gardener/gardener/pkg/client/garden/listers/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
@@ -225,8 +226,10 @@ func (c *Controller) shootNamespaceFilter(obj interface{}) bool {
 }
 
 func (c *Controller) getShootQueue(obj interface{}) workqueue.RateLimitingInterface {
-	if shoot, ok := obj.(*gardenv1beta1.Shoot); ok && shootIsUsedAsSeed(shoot) {
-		return c.shootSeedQueue
+	if shoot, ok := obj.(*gardenv1beta1.Shoot); ok {
+		if shootUsedAsSeed, _, _ := helper.IsUsedAsSeed(shoot); shootUsedAsSeed {
+			return c.shootSeedQueue
+		}
 	}
 	return c.shootQueue
 }

@@ -6,6 +6,7 @@ metadata:
   labels:
     chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
     addonmanager.kubernetes.io/mode: Reconcile
+    origin: gardener
 spec:
   revisionHistoryLimit: 0
   replicas: {{ .Values.ui.replicaCount }}
@@ -19,6 +20,7 @@ spec:
         app: {{ template "fullname" . }}-ui
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/ui-config.yaml") . | sha256sum }}
+        checksum/vhost: {{ include (print $.Template.BasePath "/ui-vhost.yaml") . | sha256sum }}
     spec:
       containers:
       - name: {{ .Chart.Name }}

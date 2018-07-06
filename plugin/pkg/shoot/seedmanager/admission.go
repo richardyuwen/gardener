@@ -46,9 +46,14 @@ func Register(plugins *admission.Plugins) {
 type SeedManager struct {
 	*admission.Handler
 	seedLister gardenlisters.SeedLister
+	readyFunc  admission.ReadyFunc
 }
 
-var _ = admissioninitializer.WantsInternalGardenInformerFactory(&SeedManager{})
+var (
+	_ = admissioninitializer.WantsInternalGardenInformerFactory(&SeedManager{})
+
+	readyFuncs = []admission.ReadyFunc{}
+)
 
 // New creates a new SeedManager admission plugin.
 func New() (*SeedManager, error) {
@@ -57,14 +62,23 @@ func New() (*SeedManager, error) {
 	}, nil
 }
 
+// AssignReadyFunc assigns the ready function to the admission handler.
+func (s *SeedManager) AssignReadyFunc(f admission.ReadyFunc) {
+	s.readyFunc = f
+	s.SetReadyFunc(f)
+}
+
 // SetInternalGardenInformerFactory gets Lister from SharedInformerFactory.
-func (h *SeedManager) SetInternalGardenInformerFactory(f gardeninformers.SharedInformerFactory) {
-	h.seedLister = f.Garden().InternalVersion().Seeds().Lister()
+func (s *SeedManager) SetInternalGardenInformerFactory(f gardeninformers.SharedInformerFactory) {
+	seedInformer := f.Garden().InternalVersion().Seeds()
+	s.seedLister = seedInformer.Lister()
+
+	readyFuncs = append(readyFuncs, seedInformer.Informer().HasSynced)
 }
 
 // ValidateInitialization checks whether the plugin was correctly initialized.
-func (h *SeedManager) ValidateInitialization() error {
-	if h.seedLister == nil {
+func (s *SeedManager) ValidateInitialization() error {
+	if s.seedLister == nil {
 		return errors.New("missing seed lister")
 	}
 	return nil
@@ -73,9 +87,19 @@ func (h *SeedManager) ValidateInitialization() error {
 // Admit tries to find an adequate Seed cluster for the given cloud provider profile and region,
 // and writes the name into the Shoot specification. It also ensures that protected Seeds are
 // only usable by Shoots in the garden namespace.
-func (h *SeedManager) Admit(a admission.Attributes) error {
+func (s *SeedManager) Admit(a admission.Attributes) error {
 	// Wait until the caches have been synced
-	if !h.WaitForReady() {
+	if s.readyFunc == nil {
+		s.AssignReadyFunc(func() bool {
+			for _, readyFunc := range readyFuncs {
+				if !readyFunc() {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	if !s.WaitForReady() {
 		return admission.NewForbidden(a, errors.New("not yet ready to handle request"))
 	}
 
@@ -90,8 +114,9 @@ func (h *SeedManager) Admit(a admission.Attributes) error {
 
 	// If the Shoot manifest already specifies a desired Seed cluster, then we check whether it is protected or not.
 	// In case it is protected then we only allow Shoot resources to reference it which are part of the Garden namespace.
+	// Also, we don't allow shoot to be created on the seed which is already marked to be deleted.
 	if shoot.Spec.Cloud.Seed != nil {
-		seed, err := h.seedLister.Get(*shoot.Spec.Cloud.Seed)
+		seed, err := s.seedLister.Get(*shoot.Spec.Cloud.Seed)
 		if err != nil {
 			return admission.NewForbidden(a, err)
 		}
@@ -100,11 +125,15 @@ func (h *SeedManager) Admit(a admission.Attributes) error {
 			return admission.NewForbidden(a, errors.New("forbidden to use a protected seed"))
 		}
 
+		if a.GetOperation() == admission.Create && seed.DeletionTimestamp != nil {
+			return admission.NewForbidden(a, errors.New("forbidden to use a seed marked to be deleted"))
+		}
+
 		return nil
 	}
 
 	// If no Seed is referenced, we try to determine an adequate one.
-	seed, err := determineSeed(shoot, h.seedLister)
+	seed, err := determineSeed(shoot, s.seedLister)
 	if err != nil {
 		return admission.NewForbidden(a, err)
 	}
@@ -113,7 +142,7 @@ func (h *SeedManager) Admit(a admission.Attributes) error {
 	return nil
 }
 
-// determineSeed returns an approriate Seed cluster (or nil).
+// determineSeed returns an appropriate Seed cluster (or nil).
 func determineSeed(shoot *garden.Shoot, lister gardenlisters.SeedLister) (*garden.Seed, error) {
 	list, err := lister.List(labels.Everything())
 	if err != nil {
@@ -122,7 +151,7 @@ func determineSeed(shoot *garden.Shoot, lister gardenlisters.SeedLister) (*garde
 
 	for _, seed := range list {
 		// We return the first matching seed cluster.
-		if seed.Spec.Cloud.Profile == shoot.Spec.Cloud.Profile && seed.Spec.Cloud.Region == shoot.Spec.Cloud.Region && seed.Spec.Visible != nil && *seed.Spec.Visible && verifySeedAvailability(seed) {
+		if seed.DeletionTimestamp == nil && seed.Spec.Cloud.Profile == shoot.Spec.Cloud.Profile && seed.Spec.Cloud.Region == shoot.Spec.Cloud.Region && seed.Spec.Visible != nil && *seed.Spec.Visible && verifySeedAvailability(seed) {
 			return seed, nil
 		}
 	}

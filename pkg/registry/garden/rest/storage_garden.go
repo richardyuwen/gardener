@@ -18,11 +18,13 @@ import (
 	"github.com/gardener/gardener/pkg/api"
 	"github.com/gardener/gardener/pkg/apis/garden"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
+	backupinfrastructurestore "github.com/gardener/gardener/pkg/registry/garden/backupinfrastructure/storage"
 	cloudprofilestore "github.com/gardener/gardener/pkg/registry/garden/cloudprofile/storage"
 	quotastore "github.com/gardener/gardener/pkg/registry/garden/quota/storage"
 	secretbinding "github.com/gardener/gardener/pkg/registry/garden/secretbinding/storage"
 	seedstore "github.com/gardener/gardener/pkg/registry/garden/seed/storage"
 	shootstore "github.com/gardener/gardener/pkg/registry/garden/shoot/storage"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/registry/rest"
 	genericapiserver "k8s.io/apiserver/pkg/server"
@@ -33,11 +35,8 @@ type StorageProvider struct{}
 
 // NewRESTStorage creates a new API group info object and registers the v1beta1 Garden storage.
 func (p StorageProvider) NewRESTStorage(restOptionsGetter generic.RESTOptionsGetter) genericapiserver.APIGroupInfo {
-	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(garden.GroupName, api.Registry, api.Scheme, api.ParameterCodec, api.Codecs)
-
+	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(garden.GroupName, api.Scheme, metav1.ParameterCodec, api.Codecs)
 	apiGroupInfo.VersionedResourcesStorageMap[gardenv1beta1.SchemeGroupVersion.Version] = p.v1beta1Storage(restOptionsGetter)
-	apiGroupInfo.GroupMeta.GroupVersion = gardenv1beta1.SchemeGroupVersion
-
 	return apiGroupInfo
 }
 
@@ -65,6 +64,10 @@ func (p StorageProvider) v1beta1Storage(restOptionsGetter generic.RESTOptionsGet
 	shootStorage := shootstore.NewStorage(restOptionsGetter)
 	storage["shoots"] = shootStorage.Shoot
 	storage["shoots/status"] = shootStorage.Status
+
+	backupInfrastructureStorage := backupinfrastructurestore.NewStorage(restOptionsGetter)
+	storage["backupinfrastructures"] = backupInfrastructureStorage.BackupInfrastructure
+	storage["backupinfrastructures/status"] = backupInfrastructureStorage.Status
 
 	return storage
 }

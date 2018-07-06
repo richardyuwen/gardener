@@ -17,6 +17,7 @@ package cloudbotanist
 import (
 	"github.com/gardener/gardener/pkg/operation"
 	"github.com/gardener/gardener/pkg/operation/common"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 // CloudBotanist is an interface which must be implemented by cloud-specific Botanists. The Cloud Botanist
@@ -32,6 +33,7 @@ type CloudBotanist interface {
 
 	// Control Plane
 	GenerateCloudProviderConfig() (string, error)
+	RefreshCloudProviderConfig(map[string]string) map[string]string
 	GenerateCloudConfigUserDataConfig() *common.CloudConfigUserDataConfig
 	GenerateEtcdBackupConfig() (map[string][]byte, map[string]interface{}, error)
 	GenerateKubeAPIServerConfig() (map[string]interface{}, error)
@@ -40,7 +42,10 @@ type CloudBotanist interface {
 
 	// Machines
 	GetMachineClassInfo() (string, string, string)
-	GenerateMachineConfig() ([]map[string]interface{}, []operation.MachineDeployment, error)
+	GenerateMachineConfig() ([]map[string]interface{}, operation.MachineDeployments, error)
+	GenerateMachineClassSecretData() map[string][]byte
+	ListMachineClasses() (sets.String, sets.String, error)
+	CleanupMachineClasses(existingMachineDeployments operation.MachineDeployments) error
 
 	// Addons
 	DeployKube2IAMResources() error

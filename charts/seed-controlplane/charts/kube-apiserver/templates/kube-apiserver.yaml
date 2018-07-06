@@ -37,14 +37,16 @@ spec:
         - /hyperkube
         - apiserver
         {{- if semverCompare "< 1.10" .Values.kubernetesVersion }}
-        - --admission-control=NamespaceLifecycle,LimitRanger,Initializers,ServiceAccount,NodeRestriction,DefaultStorageClass,PersistentVolumeLabel,DefaultTolerationSeconds,ResourceQuota
+        - --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,NodeRestriction,DefaultStorageClass,PersistentVolumeLabel,DefaultTolerationSeconds,ResourceQuota
         {{- else }}
-        - --enable-admission-plugins=Initializers,NamespaceLifecycle,LimitRanger,ServiceAccount,NodeRestriction,DefaultStorageClass,PersistentVolumeLabel,DefaultTolerationSeconds,StorageObjectInUseProtection,{{ if semverCompare ">= 1.9" .Values.kubernetesVersion }}MutatingAdmissionWebhook,{{ end }}ValidatingAdmissionWebhook,ResourceQuota,PodPreset
+        - --enable-admission-plugins=NamespaceLifecycle,LimitRanger,ServiceAccount,NodeRestriction,DefaultStorageClass,PersistentVolumeLabel,DefaultTolerationSeconds,StorageObjectInUseProtection,{{ if semverCompare ">= 1.9" .Values.kubernetesVersion }}MutatingAdmissionWebhook,{{ end }}ValidatingAdmissionWebhook,ResourceQuota
         {{- end }}
         - --advertise-address={{ .Values.advertiseAddress }}
         - --allow-privileged=true
         - --anonymous-auth=false
+        {{- if semverCompare "< 1.11" .Values.kubernetesVersion }}
         - --apiserver-count={{ .Values.replicas }}
+        {{- end }}
         {{- if semverCompare ">= 1.8" .Values.kubernetesVersion }}
         - --audit-log-path=/var/lib/audit.log
         - --audit-policy-file=/etc/kubernetes/audit/audit-policy.yaml
@@ -60,8 +62,11 @@ spec:
         - --cloud-config=/etc/kubernetes/cloudprovider/cloudprovider.conf
         - --enable-aggregator-routing=true
         - --enable-bootstrap-token-auth=true
-        - --etcd-servers=http://$(ETCD_MAIN_CLIENT_SERVICE_HOST):$(ETCD_MAIN_CLIENT_SERVICE_PORT)
-        - --etcd-servers-overrides=/events#http://$(ETCD_EVENTS_CLIENT_SERVICE_HOST):$(ETCD_EVENTS_CLIENT_SERVICE_PORT)
+        - --etcd-cafile=/srv/kubernetes/ca/ca.crt
+        - --etcd-certfile=/srv/kubernetes/etcd/tls.crt
+        - --etcd-keyfile=/srv/kubernetes/etcd/tls.key
+        - --etcd-servers=https://{{ .Values.etcdMainServiceFqdn }}:{{ .Values.etcdServicePort }}
+        - --etcd-servers-overrides=/events#https://{{ .Values.etcdEventsServiceFqdn }}:{{ .Values.etcdServicePort }}
         {{- include "kube-apiserver.featureGates" . | trimSuffix "," | indent 8 }}
         - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP
         - --kubelet-client-certificate=/srv/kubernetes/apiserver-kubelet/kube-apiserver-kubelet.crt
@@ -93,11 +98,24 @@ spec:
             port: {{ required ".securePort is required" .Values.securePort }}
             httpHeaders:
             - name: Authorization
-              value: Basic {{ .Values.livenessProbeCredentials }}
+              value: Basic {{ .Values.probeCredentials }}
           successThreshold: 1
           failureThreshold: 2
           initialDelaySeconds: 30
-          periodSeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 15
+        readinessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: /healthz
+            port: {{ required ".securePort is required" .Values.securePort }}
+            httpHeaders:
+            - name: Authorization
+              value: Basic {{ .Values.probeCredentials }}
+          successThreshold: 1
+          failureThreshold: 2
+          initialDelaySeconds: 10
+          periodSeconds: 30
           timeoutSeconds: 15
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
@@ -108,13 +126,10 @@ spec:
         - name: local
           containerPort: 8080
           protocol: TCP
+        {{- if .Values.apiServerResources }}
         resources:
-          requests:
-            cpu: 200m
-            memory: 512Mi
-          limits:
-            cpu: "1"
-            memory: 2048Mi
+{{ toYaml .Values.apiServerResources | indent 10 }}
+        {{- end }}
         volumeMounts:
         {{- if semverCompare ">= 1.8" .Values.kubernetesVersion }}
         - name: audit-policy-config
@@ -122,6 +137,8 @@ spec:
         {{- end }}
         - name: ca
           mountPath: /srv/kubernetes/ca
+        - name: etcd-client-tls
+          mountPath: /srv/kubernetes/etcd
         - name: kube-apiserver
           mountPath: /srv/kubernetes/apiserver
         - name: service-account-key
@@ -196,7 +213,7 @@ spec:
             cpu: 50m
             memory: 128Mi
         volumeMounts:
-        - name: blackbox-exporter-config
+        - name: blackbox-exporter-config-apiserver
           mountPath: /vpn
       dnsPolicy: ClusterFirst
       restartPolicy: Always
@@ -214,6 +231,9 @@ spec:
       - name: kube-apiserver
         secret:
           secretName: kube-apiserver
+      - name: etcd-client-tls
+        secret:
+          secretName: etcd-client-tls
       - name: service-account-key
         secret:
           secretName: service-account-key
@@ -249,6 +269,6 @@ spec:
       - name: ssl-certs-hosts
         hostPath:
           path: /usr/share/ca-certificates
-      - name: blackbox-exporter-config
+      - name: blackbox-exporter-config-apiserver
         configMap:
-          name: blackbox-exporter-config
+          name: blackbox-exporter-config-apiserver

@@ -78,6 +78,10 @@ func (c *Client) Apply(m []byte) error {
 		if apierrors.IsNotFound(getErr) {
 			// Resource object was not found, i.e. it does not exist yet. We need to POST.
 			if postErr := c.post(absPath, manifest); postErr != nil {
+				// Handle race conditions in which the resource has been created in the meanwhile.
+				if apierrors.IsAlreadyExists(postErr) {
+					return c.Apply(m)
+				}
 				return postErr
 			}
 		} else {
@@ -96,6 +100,9 @@ func (c *Client) Apply(m []byte) error {
 				return e
 			}
 			newObj.SetResourceVersion(oldObj.GetResourceVersion())
+
+			// We do not want to overwrite the Finalizers.
+			newObj.Object["metadata"].(map[string]interface{})["finalizers"] = oldObj.Object["metadata"].(map[string]interface{})["finalizers"]
 
 			switch kind {
 			case "Service":
@@ -170,12 +177,12 @@ func (c *Client) buildPath(apiVersion, kind, namespace string) (string, error) {
 	// Thus, we need to have some retry logic regarding the discovery.
 	// See also: https://github.com/kubernetes/kubernetes/issues/45786
 
-	// Perform at most five steps with the following approx. delays: +0.5s, +1.8s, +5s
+	// Perform at most four tries with the following approx. delays: +0.5s, +1.8s, +5s, +11.8s
 	backoff := wait.Backoff{
 		Duration: time.Second,
 		Factor:   2.5,
 		Jitter:   0.3,
-		Steps:    3,
+		Steps:    4,
 	}
 
 	if err := wait.ExponentialBackoff(backoff, func() (bool, error) {
@@ -191,7 +198,6 @@ func (c *Client) buildPath(apiVersion, kind, namespace string) (string, error) {
 						return true, nil
 					}
 				}
-				return false, fmt.Errorf("%s is not registered in API group %s", kind, apiVersion)
 			}
 		}
 		// Refresh client API discovery
@@ -200,7 +206,7 @@ func (c *Client) buildPath(apiVersion, kind, namespace string) (string, error) {
 		}
 		return false, nil
 	}); err != nil {
-		return "", fmt.Errorf("Could not find API group %s", apiVersion)
+		return "", fmt.Errorf("Could not construct the API path for apiVersion %s and kind %s: (%v)", apiVersion, kind, err)
 	}
 
 	return apiPath, nil
@@ -212,19 +218,19 @@ func (c *Client) get(path string) rest.Result {
 }
 
 // post performs a HTTP POST request on the given path and with the given body (must be a byte
-// slice containing valid JSON). An error will be returned if one occurrs.
+// slice containing valid JSON). An error will be returned if one occurs.
 func (c *Client) post(path string, body []byte) error {
 	return c.restClient.Post().AbsPath(path).Body(body).Do().Error()
 }
 
 // put performs a HTTP PUT request on the given path and with the given body (must be a byte
-// slice containing valid JSON). An error will be returned if one occurrs.
+// slice containing valid JSON). An error will be returned if one occurs.
 func (c *Client) put(path string, body []byte) error {
 	return c.restClient.Put().AbsPath(path).Body(body).Do().Error()
 }
 
 // patch performs a HTTP PATCH request on the given path and with the given body (must be a byte
-// slice containing valid JSON). An error will be returned if one occurrs.
+// slice containing valid JSON). An error will be returned if one occurs.
 // The patch type is merge patch.
 func (c *Client) patch(path string, body []byte) error {
 	return c.restClient.Patch(types.MergePatchType).AbsPath(path).Body(body).Do().Error()

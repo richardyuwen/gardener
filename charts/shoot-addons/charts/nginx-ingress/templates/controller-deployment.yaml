@@ -9,6 +9,7 @@ metadata:
     heritage: {{ .Release.Service }}
     release: {{ .Release.Name }}
     addonmanager.kubernetes.io/mode: Reconcile
+    origin: gardener
   name: {{ template "controller.fullname" . }}
   namespace: kube-system
 spec:
@@ -39,12 +40,14 @@ spec:
           args:
           - /nginx-ingress-controller
           - --default-backend-service={{ if .Values.defaultBackend.enabled }}{{ .Release.Namespace }}/{{ template "defaultBackend.fullname" . }}{{ else }}{{ .Values.controller.defaultBackendService }}{{ end }}
+          - --enable-ssl-passthrough=true
           {{- if .Values.controller.publishService.enabled }}
           - --publish-service={{ template "controller.publishServicePath" . }}
           {{- end }}
           - --election-id={{ .Values.controller.electionID }}
           - --ingress-class={{ .Values.controller.ingressClass }}
           - --update-status=true
+          - --annotations-prefix=nginx.ingress.kubernetes.io
           - --configmap={{ .Release.Namespace }}/{{ template "controller.fullname" . }}
           {{- if .Values.tcp }}
           - --tcp-services-configmap={{ .Release.Namespace }}/{{ template "fullname" . }}-tcp
@@ -58,21 +61,32 @@ spec:
           {{- range $key, $value := .Values.controller.extraArgs }}
           - --{{ $key }}={{ $value }}
           {{- end }}
+          securityContext:
+            capabilities:
+                drop:
+                - ALL
+                add:
+                - NET_BIND_SERVICE
+            # www-data -> 33
+            runAsUser: 33
           env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
           livenessProbe:
+            failureThreshold: 3
             httpGet:
               path: /healthz
               port: 10254
               scheme: HTTP
             initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
             timeoutSeconds: 1
           ports:
             - name: http
@@ -97,32 +111,16 @@ spec:
               protocol: UDP
           {{- end }}
           readinessProbe:
+            failureThreshold: 3
             httpGet:
               path: /healthz
               port: 10254
               scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
           resources:
 {{ toYaml .Values.controller.resources | indent 12 }}
-      {{- if .Values.controller.stats.enabled }}
-        - name: {{ template "name" . }}-{{ .Values.statsExporter.name }}
-          image: {{ index .Values.images "vts-ingress-exporter" }}
-          imagePullPolicy: "{{ .Values.statsExporter.image.pullPolicy }}"
-          env:
-            - name: METRICS_ADDR
-              value: ":9913"
-            - name: METRICS_ENDPOINT
-              value: "{{ .Values.statsExporter.endpoint }}"
-            - name: METRICS_NS
-              value: "{{ .Values.statsExporter.metricsNamespace }}"
-            - name: NGINX_STATUS
-              value: "{{ .Values.statsExporter.statusPage }}"
-          ports:
-            - name: metrics
-              containerPort: 9913
-              protocol: TCP
-          resources:
-{{ toYaml .Values.statsExporter.resources | indent 12 }}
-      {{- end }}
       hostNetwork: {{ .Values.controller.hostNetwork }}
     {{- if .Values.controller.nodeSelector }}
       nodeSelector:

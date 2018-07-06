@@ -9,6 +9,7 @@ import (
 
 type GardenInterface interface {
 	RESTClient() rest.Interface
+	BackupInfrastructuresGetter
 	CloudProfilesGetter
 	QuotasGetter
 	SecretBindingsGetter
@@ -19,6 +20,10 @@ type GardenInterface interface {
 // GardenClient is used to interact with features provided by the garden.sapcloud.io group.
 type GardenClient struct {
 	restClient rest.Interface
+}
+
+func (c *GardenClient) BackupInfrastructures(namespace string) BackupInfrastructureInterface {
+	return newBackupInfrastructures(c, namespace)
 }
 
 func (c *GardenClient) CloudProfiles() CloudProfileInterface {
@@ -70,17 +75,12 @@ func New(c rest.Interface) *GardenClient {
 }
 
 func setConfigDefaults(config *rest.Config) error {
-	g, err := scheme.Registry.Group("garden.sapcloud.io")
-	if err != nil {
-		return err
-	}
-
 	config.APIPath = "/apis"
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()
 	}
-	if config.GroupVersion == nil || config.GroupVersion.Group != g.GroupVersion.Group {
-		gv := g.GroupVersion
+	if config.GroupVersion == nil || config.GroupVersion.Group != scheme.Scheme.PrioritizedVersionsForGroup("garden.sapcloud.io")[0].Group {
+		gv := scheme.Scheme.PrioritizedVersionsForGroup("garden.sapcloud.io")[0]
 		config.GroupVersion = &gv
 	}
 	config.NegotiatedSerializer = scheme.Codecs

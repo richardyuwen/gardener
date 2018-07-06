@@ -113,6 +113,10 @@ func (b *HybridBotanist) generateCoreAddonsChart() (*chartrenderer.RenderedChart
 // will be stored as a Secret (as it may contain credentials) and mounted into the Pod. The configuration
 // contains specially labelled Kubernetes manifests which will be created and periodically reconciled.
 func (b *HybridBotanist) generateOptionalAddonsChart() (*chartrenderer.RenderedChart, error) {
+	clusterAutoscalerConfig, err := b.Botanist.GenerateClusterAutoscalerConfig()
+	if err != nil {
+		return nil, err
+	}
 	heapsterConfig, err := b.Botanist.GenerateHeapsterConfig()
 	if err != nil {
 		return nil, err
@@ -162,16 +166,17 @@ func (b *HybridBotanist) generateOptionalAddonsChart() (*chartrenderer.RenderedC
 	if err != nil {
 		return nil, err
 	}
-	monocular, err := b.Botanist.InjectImages(monocularConfig, b.K8sShootClient.Version(), map[string]string{"monocular-api": "monocular-api", "monocular-ui": "monocular-ui", "monocular-prerender": "monocular-prerender", "busybox": "busybox"})
+	monocular, err := b.Botanist.InjectImages(monocularConfig, b.K8sShootClient.Version(), map[string]string{"monocular-api": "monocular-api", "monocular-ui": "monocular-ui", "busybox": "busybox"})
 	if err != nil {
 		return nil, err
 	}
-	nginxIngress, err := b.Botanist.InjectImages(nginxIngressConfig, b.K8sShootClient.Version(), map[string]string{"nginx-ingress-controller": "nginx-ingress-controller", "ingress-default-backend": "ingress-default-backend", "vts-ingress-exporter": "vts-ingress-exporter"})
+	nginxIngress, err := b.Botanist.InjectImages(nginxIngressConfig, b.K8sShootClient.Version(), map[string]string{"nginx-ingress-controller": "nginx-ingress-controller", "ingress-default-backend": "ingress-default-backend"})
 	if err != nil {
 		return nil, err
 	}
 
 	return b.ChartShootRenderer.Render(filepath.Join(common.ChartPath, "shoot-addons"), "addons", metav1.NamespaceSystem, map[string]interface{}{
+		"cluster-autoscaler":   clusterAutoscalerConfig,
 		"heapster":             heapster,
 		"helm-tiller":          helmTiller,
 		"kube-lego":            kubeLego,

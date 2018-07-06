@@ -5,6 +5,7 @@ Conceptionally, the Gardener is designated to run in containers within a Pod ins
 Further details could be found in
 
 1. [principles of Kubernetes](https://kubernetes.io/docs/concepts/), and its [components](https://kubernetes.io/docs/concepts/overview/components/)
+1. [Kubernetes Development Guide](https://github.com/kubernetes/community/tree/master/contributors/devel)
 1. [architecture of the Garden](https://github.com/gardener/documentation/wiki/Architecture)
 
 This setup is based on [minikube](https://github.com/kubernetes/minikube), a Kubernetes cluster running on a single node.
@@ -217,6 +218,7 @@ In another terminal, launch the Gardener Controller Manager
 ```bash
 $ make start
 time="2018-02-20T13:24:39+02:00" level=info msg="Starting Gardener controller manager..."
+time="2018-02-20T13:24:39+02:00" level=info msg="Feature Gates: "
 time="2018-02-20T13:24:39+02:00" level=info msg="Gardener controller manager HTTP server started (serving on 0.0.0.0:2718)"
 time="2018-02-20T13:24:39+02:00" level=info msg="Found internal domain secret internal-domain-unmanaged for domain nip.io."
 time="2018-02-20T13:24:39+02:00" level=info msg="Successfully bootstrapped the Garden cluster."

@@ -16,7 +16,6 @@ package shoot
 
 import (
 	"fmt"
-	"strconv"
 
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/operation/common"
@@ -53,26 +52,6 @@ func computeLabelsWithShootHealthiness(healthy bool) func(map[string]string) map
 
 		return labels
 	}
-}
-
-func computeOperationType(lastOperation *gardenv1beta1.LastOperation) gardenv1beta1.ShootLastOperationType {
-	if lastOperation == nil || (lastOperation.Type == gardenv1beta1.ShootLastOperationTypeCreate && lastOperation.State != gardenv1beta1.ShootLastOperationStateSucceeded) {
-		return gardenv1beta1.ShootLastOperationTypeCreate
-	}
-	return gardenv1beta1.ShootLastOperationTypeReconcile
-}
-
-func shootIsUsedAsSeed(shoot *gardenv1beta1.Shoot) bool {
-	if shoot.Namespace != common.GardenNamespace {
-		return false
-	}
-
-	if val, ok := shoot.Annotations[common.ShootUseAsSeed]; ok {
-		useAsSeed, err := strconv.ParseBool(val)
-		return err == nil && useAsSeed
-	}
-
-	return false
 }
 
 func mustIgnoreShoot(annotations map[string]string, respectSyncPeriodOverwrite *bool) bool {

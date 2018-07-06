@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 
 	"github.com/gardener/gardener/pkg/apis/garden"
 	"github.com/gardener/gardener/pkg/apis/garden/helper"
@@ -52,10 +53,15 @@ type ValidateShoot struct {
 	cloudProfileLister listers.CloudProfileLister
 	seedLister         listers.SeedLister
 	namespaceLister    kubecorev1listers.NamespaceLister
+	readyFunc          admission.ReadyFunc
 }
 
-var _ = admissioninitializer.WantsInternalGardenInformerFactory(&ValidateShoot{})
-var _ = admissioninitializer.WantsKubeInformerFactory(&ValidateShoot{})
+var (
+	_ = admissioninitializer.WantsInternalGardenInformerFactory(&ValidateShoot{})
+	_ = admissioninitializer.WantsKubeInformerFactory(&ValidateShoot{})
+
+	readyFuncs = []admission.ReadyFunc{}
+)
 
 // New creates a new ValidateShoot admission plugin.
 func New() (*ValidateShoot, error) {
@@ -64,35 +70,59 @@ func New() (*ValidateShoot, error) {
 	}, nil
 }
 
+// AssignReadyFunc assigns the ready function to the admission handler.
+func (v *ValidateShoot) AssignReadyFunc(f admission.ReadyFunc) {
+	v.readyFunc = f
+	v.SetReadyFunc(f)
+}
+
 // SetInternalGardenInformerFactory gets Lister from SharedInformerFactory.
-func (h *ValidateShoot) SetInternalGardenInformerFactory(f informers.SharedInformerFactory) {
-	h.cloudProfileLister = f.Garden().InternalVersion().CloudProfiles().Lister()
-	h.seedLister = f.Garden().InternalVersion().Seeds().Lister()
+func (v *ValidateShoot) SetInternalGardenInformerFactory(f informers.SharedInformerFactory) {
+	seedInformer := f.Garden().InternalVersion().Seeds()
+	v.seedLister = seedInformer.Lister()
+
+	cloudProfileInformer := f.Garden().InternalVersion().CloudProfiles()
+	v.cloudProfileLister = cloudProfileInformer.Lister()
+
+	readyFuncs = append(readyFuncs, seedInformer.Informer().HasSynced, cloudProfileInformer.Informer().HasSynced)
 }
 
 // SetKubeInformerFactory gets Lister from SharedInformerFactory.
-func (h *ValidateShoot) SetKubeInformerFactory(f kubeinformers.SharedInformerFactory) {
-	h.namespaceLister = f.Core().V1().Namespaces().Lister()
+func (v *ValidateShoot) SetKubeInformerFactory(f kubeinformers.SharedInformerFactory) {
+	namespaceInformer := f.Core().V1().Namespaces()
+	v.namespaceLister = namespaceInformer.Lister()
+
+	readyFuncs = append(readyFuncs, namespaceInformer.Informer().HasSynced)
 }
 
 // ValidateInitialization checks whether the plugin was correctly initialized.
-func (h *ValidateShoot) ValidateInitialization() error {
-	if h.cloudProfileLister == nil {
+func (v *ValidateShoot) ValidateInitialization() error {
+	if v.cloudProfileLister == nil {
 		return errors.New("missing cloudProfile lister")
 	}
-	if h.seedLister == nil {
+	if v.seedLister == nil {
 		return errors.New("missing seed lister")
 	}
-	if h.namespaceLister == nil {
+	if v.namespaceLister == nil {
 		return errors.New("missing namespace lister")
 	}
 	return nil
 }
 
 // Admit validates the Shoot details against the referenced CloudProfile.
-func (h *ValidateShoot) Admit(a admission.Attributes) error {
+func (v *ValidateShoot) Admit(a admission.Attributes) error {
 	// Wait until the caches have been synced
-	if !h.WaitForReady() {
+	if v.readyFunc == nil {
+		v.AssignReadyFunc(func() bool {
+			for _, readyFunc := range readyFuncs {
+				if !readyFunc() {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	if !v.WaitForReady() {
 		return admission.NewForbidden(a, errors.New("not yet ready to handle request"))
 	}
 
@@ -105,33 +135,40 @@ func (h *ValidateShoot) Admit(a admission.Attributes) error {
 		return apierrors.NewInternalError(errors.New("could not convert resource into Shoot object"))
 	}
 
-	cloudProfile, err := h.cloudProfileLister.Get(shoot.Spec.Cloud.Profile)
+	cloudProfile, err := v.cloudProfileLister.Get(shoot.Spec.Cloud.Profile)
 	if err != nil {
 		return apierrors.NewBadRequest("could not find referenced cloud profile")
 	}
-	seed, err := h.seedLister.Get(*shoot.Spec.Cloud.Seed)
+	seed, err := v.seedLister.Get(*shoot.Spec.Cloud.Seed)
 	if err != nil {
 		return apierrors.NewBadRequest("could not find referenced seed")
 	}
-	namespace, err := h.namespaceLister.Get(shoot.Namespace)
+	namespace, err := v.namespaceLister.Get(shoot.Namespace)
 	if err != nil {
 		return apierrors.NewBadRequest("could not find referenced namespace")
 	}
 
-	// We use the identifier "shoot-<project-name>-<shoot-name> in nearly all places: when creating infrastructure
-	// resources, Kubernetes resources, DNS names, etc. Some infrastructure resources have length constraints that
-	// this identifier must not exceed 30 characters, thus we need to check whether Shoots do not exceed this limit.
-	// The project name is a label on the namespace. If it is not found, the namespace name itself is used as project
-	// name.
-	var (
-		projectName = shoot.Namespace
-		lengthLimit = 23
-	)
-	if projectNameLabel, ok := namespace.Labels[common.ProjectName]; ok {
-		projectName = projectNameLabel
-	}
-	if len(projectName+shoot.Name) > lengthLimit {
-		return apierrors.NewBadRequest(fmt.Sprintf("the length of the shoot name and the project name must not exceed %d characters (project: %s; shoot: %s)", lengthLimit, projectName, shoot.Name))
+	// We currently use the identifier "shoot-<project-name>-<shoot-name> in nearly all places for old Shoots, but have
+	// changed that to "shoot--<project-name>-<shoot-name>": when creating infrastructure resources, Kubernetes resources,
+	// DNS names, etc., then this identifier is used to tag/name the resources. Some of those resources have length
+	// constraints that this identifier must not exceed 30 characters, thus we need to check whether Shoots do not exceed
+	// this limit. The project name is a label on the namespace. If it is not found, the namespace name itself is used as
+	// project name. These checks should only be performed for CREATE operations (we do not want to reject changes to existing
+	// Shoots in case the limits are changed in the future).
+	if a.GetOperation() == admission.Create {
+		var (
+			projectName = shoot.Namespace
+			lengthLimit = 21
+		)
+		if projectNameLabel, ok := namespace.Labels[common.ProjectName]; ok {
+			projectName = projectNameLabel
+		}
+		if len(projectName+shoot.Name) > lengthLimit {
+			return apierrors.NewBadRequest(fmt.Sprintf("the length of the shoot name and the project name must not exceed %d characters (project: %s; shoot: %s)", lengthLimit, projectName, shoot.Name))
+		}
+		if strings.Contains(projectName, "--") {
+			return apierrors.NewBadRequest(fmt.Sprintf("the project name must not contain two consecutive hyphens (project: %s)", projectName))
+		}
 	}
 
 	cloudProviderInShoot, err := helper.DetermineCloudProviderInShoot(shoot.Spec.Cloud)

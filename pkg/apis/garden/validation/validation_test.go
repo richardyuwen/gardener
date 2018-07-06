@@ -20,9 +20,11 @@ import (
 
 	"github.com/gardener/gardener/pkg/apis/garden"
 	. "github.com/gardener/gardener/pkg/apis/garden/validation"
+	"github.com/gardener/gardener/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	. "github.com/onsi/ginkgo"
@@ -1410,7 +1412,7 @@ var _ = Describe("validation", func() {
 
 		It("should forbid Seed specification with empty or invalid keys", func() {
 			seed.Spec.Cloud = garden.SeedCloud{}
-			seed.Spec.IngressDomain = "invalid-domain-name"
+			seed.Spec.IngressDomain = "invalid_dns1123-subdomain"
 			seed.Spec.SecretRef = corev1.SecretReference{}
 			seed.Spec.Networks = garden.SeedNetworks{
 				Nodes:    garden.CIDR("invalid-cidr"),
@@ -1512,7 +1514,7 @@ var _ = Describe("validation", func() {
 		})
 	})
 
-	Describe("#ValidateSecretBinding", func() {
+	Describe("#ValidateSecretBinding, #ValidateSecretBindingUpdate", func() {
 		var secretBinding *garden.SecretBinding
 
 		BeforeEach(func() {
@@ -1566,6 +1568,27 @@ var _ = Describe("validation", func() {
 			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
 				"Type":  Equal(field.ErrorTypeRequired),
 				"Field": Equal("quotas[0].name"),
+			}))
+		})
+
+		It("should forbid updating the secret binding spec", func() {
+			newSecretBinding := prepareSecretBindingForUpdate(secretBinding)
+			newSecretBinding.SecretRef.Name = "another-name"
+			newSecretBinding.Quotas = append(newSecretBinding.Quotas, corev1.ObjectReference{
+				Name:      "new-quota",
+				Namespace: "new-quota-ns",
+			})
+
+			errorList := ValidateSecretBindingUpdate(newSecretBinding, secretBinding)
+
+			Expect(len(errorList)).To(Equal(2))
+			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeInvalid),
+				"Field": Equal("secretRef"),
+			}))
+			Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeInvalid),
+				"Field": Equal("quotas"),
 			}))
 		})
 	})
@@ -1622,6 +1645,24 @@ var _ = Describe("validation", func() {
 				MachineType:   "large",
 				AutoScalerMin: 1,
 				AutoScalerMax: 1,
+			}
+			workerAutoScaling = garden.Worker{
+				Name:          "cpu-worker",
+				MachineType:   "large",
+				AutoScalerMin: 1,
+				AutoScalerMax: 2,
+			}
+			workerAutoScalingInvalid = garden.Worker{
+				Name:          "cpu-worker",
+				MachineType:   "large",
+				AutoScalerMin: 0,
+				AutoScalerMax: 2,
+			}
+			workerAutoScalingHibernated = garden.Worker{
+				Name:          "cpu-worker",
+				MachineType:   "large",
+				AutoScalerMin: 0,
+				AutoScalerMax: 0,
 			}
 		)
 
@@ -1720,6 +1761,18 @@ var _ = Describe("validation", func() {
 					},
 				},
 			}
+		})
+
+		It("should forbid shoots containing two consecutive hyphens", func() {
+			shoot.ObjectMeta.Name = "sho--ot"
+
+			errorList := ValidateShoot(shoot)
+
+			Expect(len(errorList)).To(Equal(1))
+			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeInvalid),
+				"Field": Equal("metadata.name"),
+			}))
 		})
 
 		It("should forbid empty Shoot resources", func() {
@@ -1946,6 +1999,26 @@ var _ = Describe("validation", func() {
 				}))
 			})
 
+			It("should forbid non-specified k8s networks", func() {
+				shoot.Spec.Cloud.AWS.Networks.K8SNetworks = garden.K8SNetworks{}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(3))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.nodes", fldPath)),
+				}))
+				Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.pods", fldPath)),
+				}))
+				Expect(*errorList[2]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.services", fldPath)),
+				}))
+			})
+
 			It("should forbid invalid VPC CIDRs", func() {
 				shoot.Spec.Cloud.AWS.Networks.VPC.CIDR = &invalidCIDR
 
@@ -2032,6 +2105,59 @@ var _ = Describe("validation", func() {
 				Expect(*errorList[6]).To(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeRequired),
 					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].volumeType", fldPath)),
+				}))
+			})
+
+			It("should enforce workers min > 0 if autoscaler is enabled and max > 0", func() {
+				shoot.Spec.Cloud.AWS.Workers = []garden.AWSWorker{
+					{
+						Worker:     workerAutoScalingInvalid,
+						VolumeSize: "20Gi",
+						VolumeType: "default",
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin", fldPath)),
+				}))
+			})
+
+			It("should allow workers min=0 if autoscaler is enabled and max=0", func() {
+				shoot.Spec.Cloud.AWS.Workers = []garden.AWSWorker{
+					{
+						Worker:     workerAutoScalingHibernated,
+						VolumeSize: "20Gi",
+						VolumeType: "default",
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(0))
+			})
+
+			It("should enforce workers min=max if autoscaler is disabled", func() {
+				shoot.Spec.Cloud.AWS.Workers = []garden.AWSWorker{
+					{
+						Worker:     workerAutoScaling,
+						VolumeSize: "20Gi",
+						VolumeType: "default",
+					},
+				}
+				shoot.Spec.Addons.ClusterAutoscaler.Addon = garden.Addon{
+					Enabled: false,
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin/autoScalerMax", fldPath)),
 				}))
 			})
 
@@ -2237,6 +2363,26 @@ var _ = Describe("validation", func() {
 				}))
 			})
 
+			It("should forbid non-specified k8s networks", func() {
+				shoot.Spec.Cloud.Azure.Networks.K8SNetworks = garden.K8SNetworks{}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(3))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.nodes", fldPath)),
+				}))
+				Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.pods", fldPath)),
+				}))
+				Expect(*errorList[2]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.services", fldPath)),
+				}))
+			})
+
 			It("should forbid invalid VNet CIDRs", func() {
 				shoot.Spec.Cloud.Azure.Networks.VNet.CIDR = &invalidCIDR
 
@@ -2295,7 +2441,7 @@ var _ = Describe("validation", func() {
 
 				errorList := ValidateShoot(shoot)
 
-				Expect(len(errorList)).To(Equal(8))
+				Expect(len(errorList)).To(Equal(7))
 				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeInvalid),
 					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].name", fldPath)),
@@ -2324,9 +2470,58 @@ var _ = Describe("validation", func() {
 					"Type":  Equal(field.ErrorTypeRequired),
 					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].volumeType", fldPath)),
 				}))
-				Expect(*errorList[7]).To(MatchFields(IgnoreExtras, Fields{
+			})
+
+			It("should enforce workers min > 0 if autoscaler is enabled and max > 0", func() {
+				shoot.Spec.Cloud.Azure.Workers = []garden.AzureWorker{
+					{
+						Worker:     workerAutoScalingInvalid,
+						VolumeSize: "40Gi",
+						VolumeType: "default",
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMax", fldPath)),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin", fldPath)),
+				}))
+			})
+
+			It("should allow workers min=0 if autoscaler is enabled and max=0", func() {
+				shoot.Spec.Cloud.Azure.Workers = []garden.AzureWorker{
+					{
+						Worker:     workerAutoScalingHibernated,
+						VolumeSize: "40Gi",
+						VolumeType: "default",
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(0))
+			})
+
+			It("should enforce workers min=max if autoscaler is disabled", func() {
+				shoot.Spec.Cloud.Azure.Workers = []garden.AzureWorker{
+					{
+						Worker:     workerAutoScaling,
+						VolumeSize: "40Gi",
+						VolumeType: "default",
+					},
+				}
+				shoot.Spec.Addons.ClusterAutoscaler.Addon = garden.Addon{
+					Enabled: false,
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin/autoScalerMax", fldPath)),
 				}))
 			})
 
@@ -2393,18 +2588,6 @@ var _ = Describe("validation", func() {
 				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeInvalid),
 					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].name", fldPath)),
-				}))
-			})
-
-			It("should forbid workers with auto scaling configured", func() {
-				shoot.Spec.Cloud.Azure.Workers[0].AutoScalerMax = shoot.Spec.Cloud.Azure.Workers[0].AutoScalerMin + 1
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(len(errorList)).To(Equal(1))
-				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMax", fldPath)),
 				}))
 			})
 
@@ -2524,6 +2707,26 @@ var _ = Describe("validation", func() {
 				}))
 			})
 
+			It("should forbid non-specified k8s networks", func() {
+				shoot.Spec.Cloud.GCP.Networks.K8SNetworks = garden.K8SNetworks{}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(3))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.nodes", fldPath)),
+				}))
+				Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.pods", fldPath)),
+				}))
+				Expect(*errorList[2]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.services", fldPath)),
+				}))
+			})
+
 			It("should forbid an empty worker list", func() {
 				shoot.Spec.Cloud.GCP.Workers = []garden.GCPWorker{}
 
@@ -2598,6 +2801,59 @@ var _ = Describe("validation", func() {
 				Expect(*errorList[6]).To(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeRequired),
 					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].volumeType", fldPath)),
+				}))
+			})
+
+			It("should enforce workers min > 0 if autoscaler is enabled and max > 0", func() {
+				shoot.Spec.Cloud.GCP.Workers = []garden.GCPWorker{
+					{
+						Worker:     workerAutoScalingInvalid,
+						VolumeSize: "20Gi",
+						VolumeType: "default",
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin", fldPath)),
+				}))
+			})
+
+			It("should allow workers min=0 if autoscaler is enabled and max=0", func() {
+				shoot.Spec.Cloud.GCP.Workers = []garden.GCPWorker{
+					{
+						Worker:     workerAutoScalingHibernated,
+						VolumeSize: "20Gi",
+						VolumeType: "default",
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(0))
+			})
+
+			It("should enforce workers min=max if autoscaler is disabled", func() {
+				shoot.Spec.Cloud.GCP.Workers = []garden.GCPWorker{
+					{
+						Worker:     workerAutoScaling,
+						VolumeSize: "20Gi",
+						VolumeType: "default",
+					},
+				}
+				shoot.Spec.Addons.ClusterAutoscaler.Addon = garden.Addon{
+					Enabled: false,
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin/autoScalerMax", fldPath)),
 				}))
 			})
 
@@ -2795,6 +3051,26 @@ var _ = Describe("validation", func() {
 				}))
 			})
 
+			It("should forbid non-specified k8s networks", func() {
+				shoot.Spec.Cloud.OpenStack.Networks.K8SNetworks = garden.K8SNetworks{}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(3))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.nodes", fldPath)),
+				}))
+				Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.pods", fldPath)),
+				}))
+				Expect(*errorList[2]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.networks.services", fldPath)),
+				}))
+			})
+
 			It("should forbid an empty worker list", func() {
 				shoot.Spec.Cloud.OpenStack.Workers = []garden.OpenStackWorker{}
 
@@ -2835,7 +3111,7 @@ var _ = Describe("validation", func() {
 
 				errorList := ValidateShoot(shoot)
 
-				Expect(len(errorList)).To(Equal(6))
+				Expect(len(errorList)).To(Equal(5))
 				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeInvalid),
 					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].name", fldPath)),
@@ -2856,9 +3132,52 @@ var _ = Describe("validation", func() {
 					"Type":  Equal(field.ErrorTypeForbidden),
 					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMax", fldPath)),
 				}))
-				Expect(*errorList[5]).To(MatchFields(IgnoreExtras, Fields{
+			})
+
+			It("should enforce workers min > 0 if autoscaler is enabled and max > 0", func() {
+				shoot.Spec.Cloud.OpenStack.Workers = []garden.OpenStackWorker{
+					{
+						Worker: workerAutoScalingInvalid,
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMax", fldPath)),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin", fldPath)),
+				}))
+			})
+
+			It("should allow workers min=0 if autoscaler is enabled and max=0", func() {
+				shoot.Spec.Cloud.OpenStack.Workers = []garden.OpenStackWorker{
+					{
+						Worker: workerAutoScalingHibernated,
+					},
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(0))
+			})
+
+			It("should enforce workers min=max if autoscaler is disabled", func() {
+				shoot.Spec.Cloud.OpenStack.Workers = []garden.OpenStackWorker{
+					{
+						Worker: workerAutoScaling,
+					},
+				}
+				shoot.Spec.Addons.ClusterAutoscaler.Addon = garden.Addon{
+					Enabled: false,
+				}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal(fmt.Sprintf("spec.cloud.%s.workers[0].autoScalerMin/autoScalerMax", fldPath)),
 				}))
 			})
 
@@ -3099,46 +3418,82 @@ var _ = Describe("validation", func() {
 			})
 		})
 
-		It("should forbid unsupported kubernetes configuration", func() {
-			shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.CABundle = makeStringPointer("")
-			shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.ClientID = makeStringPointer("")
-			shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.GroupsClaim = makeStringPointer("")
-			shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.GroupsPrefix = makeStringPointer("")
-			shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.IssuerURL = makeStringPointer("")
-			shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.UsernameClaim = makeStringPointer("")
-			shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.UsernamePrefix = makeStringPointer("")
+		Context("OIDC validation", func() {
+			It("should forbid unsupported OIDC configuration", func() {
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.CABundle = makeStringPointer("")
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.ClientID = makeStringPointer("")
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.GroupsClaim = makeStringPointer("")
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.GroupsPrefix = makeStringPointer("")
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.IssuerURL = makeStringPointer("")
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.UsernameClaim = makeStringPointer("")
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.UsernamePrefix = makeStringPointer("")
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.RequiredClaims = map[string]string{}
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.SigningAlgs = []string{}
 
-			errorList := ValidateShoot(shoot)
+				errorList := ValidateShoot(shoot)
 
-			Expect(len(errorList)).To(Equal(7))
-			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.caBundle"),
-			}))
-			Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.clientID"),
-			}))
-			Expect(*errorList[2]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.groupsClaim"),
-			}))
-			Expect(*errorList[3]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.groupsPrefix"),
-			}))
-			Expect(*errorList[4]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.issuerURL"),
-			}))
-			Expect(*errorList[5]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.usernameClaim"),
-			}))
-			Expect(*errorList[6]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.usernamePrefix"),
-			}))
+				Expect(len(errorList)).To(Equal(9))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.caBundle"),
+				}))
+				Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.clientID"),
+				}))
+				Expect(*errorList[2]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.groupsClaim"),
+				}))
+				Expect(*errorList[3]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.groupsPrefix"),
+				}))
+				Expect(*errorList[4]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.issuerURL"),
+				}))
+				Expect(*errorList[5]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.signingAlgs"),
+				}))
+				Expect(*errorList[6]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.requiredClaims"),
+				}))
+				Expect(*errorList[7]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.usernameClaim"),
+				}))
+				Expect(*errorList[8]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.usernamePrefix"),
+				}))
+			})
+
+			It("should forbid unsupported OIDC configuration (for K8S >= v1.10)", func() {
+				shoot.Spec.Kubernetes.Version = "1.10.1"
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.RequiredClaims = map[string]string{}
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.SigningAlgs = []string{}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeForbidden),
+					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.requiredClaims"),
+				}))
+			})
+
+			It("should forbid unsupported OIDC configuration (for K8S >= v1.11)", func() {
+				shoot.Spec.Kubernetes.Version = "1.11.1"
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.RequiredClaims = map[string]string{}
+				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.SigningAlgs = []string{}
+
+				errorList := ValidateShoot(shoot)
+
+				Expect(len(errorList)).To(Equal(0))
+			})
 		})
 
 		It("should forbid kubernetes version downgrades", func() {
@@ -3300,6 +3655,145 @@ var _ = Describe("validation", func() {
 			Expect(len(errorList)).To(Equal(0))
 		})
 	})
+
+	Describe("#ValidateShootStatus, #ValidateShootStatusUpdate", func() {
+		var shoot *garden.Shoot
+
+		BeforeEach(func() {
+			shoot = &garden.Shoot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "shoot",
+					Namespace: "my-namespace",
+				},
+				Spec:   garden.ShootSpec{},
+				Status: garden.ShootStatus{},
+			}
+		})
+
+		Context("uid checks", func() {
+			It("should allow setting the uid", func() {
+				newShoot := prepareShootForUpdate(shoot)
+				newShoot.Status.UID = types.UID("1234")
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+
+				Expect(len(errorList)).To(Equal(0))
+			})
+
+			It("should forbid changing the uid", func() {
+				newShoot := prepareShootForUpdate(shoot)
+				shoot.Status.UID = types.UID("1234")
+				newShoot.Status.UID = types.UID("1235")
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("status.uid"),
+				}))
+			})
+		})
+
+		Context("technical id checks", func() {
+			It("should allow setting the technical id", func() {
+				newShoot := prepareShootForUpdate(shoot)
+				newShoot.Status.TechnicalID = "shoot--foo--bar"
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+
+				Expect(len(errorList)).To(Equal(0))
+			})
+
+			It("should forbid changing the technical id", func() {
+				newShoot := prepareShootForUpdate(shoot)
+				shoot.Status.TechnicalID = "shoot-foo-bar"
+				newShoot.Status.TechnicalID = "shoot--foo--bar"
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+
+				Expect(len(errorList)).To(Equal(1))
+				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("status.technicalID"),
+				}))
+			})
+		})
+	})
+
+	Describe("#ValidateBackupInfrastructure", func() {
+		var backupInfrastructure *garden.BackupInfrastructure
+
+		BeforeEach(func() {
+			backupInfrastructure = &garden.BackupInfrastructure{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "example-backupinfrastructure",
+					Namespace: "garden",
+				},
+				Spec: garden.BackupInfrastructureSpec{
+					Seed:     "aws",
+					ShootUID: types.UID(utils.ComputeSHA1Hex([]byte(fmt.Sprintf(fmt.Sprintf("shoot-%s-%s", "garden", "backup-infrastructure"))))),
+				},
+			}
+		})
+
+		It("should not return any errors", func() {
+			errorList := ValidateBackupInfrastructure(backupInfrastructure)
+
+			Expect(len(errorList)).To(Equal(0))
+		})
+
+		It("should forbid BackupInfrastructure resources with empty metadata", func() {
+			backupInfrastructure.ObjectMeta = metav1.ObjectMeta{}
+
+			errorList := ValidateBackupInfrastructure(backupInfrastructure)
+
+			Expect(len(errorList)).To(Equal(2))
+			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeRequired),
+				"Field": Equal("metadata.name"),
+			}))
+			Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeRequired),
+				"Field": Equal("metadata.namespace"),
+			}))
+		})
+
+		It("should forbid BackupInfrastructure specification with empty or invalid keys", func() {
+			backupInfrastructure.Spec.Seed = ""
+			backupInfrastructure.Spec.ShootUID = ""
+
+			errorList := ValidateBackupInfrastructure(backupInfrastructure)
+
+			Expect(len(errorList)).To(Equal(2))
+			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeInvalid),
+				"Field": Equal("spec.seed"),
+			}))
+			Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeInvalid),
+				"Field": Equal("spec.shootUID"),
+			}))
+		})
+
+		It("should forbid updating some keys", func() {
+			newBackupInfrastructure := prepareBackupInfrastructureForUpdate(backupInfrastructure)
+			newBackupInfrastructure.Spec.Seed = "another-seed"
+			newBackupInfrastructure.Spec.ShootUID = "another-uid"
+
+			errorList := ValidateBackupInfrastructureUpdate(newBackupInfrastructure, backupInfrastructure)
+
+			Expect(len(errorList)).To(Equal(2))
+			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeInvalid),
+				"Field": Equal("spec.seed"),
+			}))
+			Expect(*errorList[1]).To(MatchFields(IgnoreExtras, Fields{
+				"Type":  Equal(field.ErrorTypeInvalid),
+				"Field": Equal("spec.shootUID"),
+			}))
+		})
+	})
 })
 
 // Helper functions
@@ -3311,6 +3805,18 @@ func makeStringPointer(s string) *string {
 
 func prepareShootForUpdate(shoot *garden.Shoot) *garden.Shoot {
 	s := shoot.DeepCopy()
+	s.ResourceVersion = "1"
+	return s
+}
+
+func prepareBackupInfrastructureForUpdate(backupInfrastructure *garden.BackupInfrastructure) *garden.BackupInfrastructure {
+	b := backupInfrastructure.DeepCopy()
+	b.ResourceVersion = "1"
+	return b
+}
+
+func prepareSecretBindingForUpdate(secretBinding *garden.SecretBinding) *garden.SecretBinding {
+	s := secretBinding.DeepCopy()
 	s.ResourceVersion = "1"
 	return s
 }

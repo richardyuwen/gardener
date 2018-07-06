@@ -567,14 +567,20 @@ type ShootStatus struct {
 	// LastError holds information about the last occurred error during an operation.
 	// +optional
 	LastError *LastError
-	// RetryCycleStartTime is the start time of the last retry cycle (used to determine how often an operation
-	// must be retried until we give up).
-	// +optional
-	RetryCycleStartTime *metav1.Time
 	// ObservedGeneration is the most recent generation observed for this Shoot. It corresponds to the
 	// Shoot's generation, which is updated on mutation by the API Server.
 	// +optional
 	ObservedGeneration int64
+	// RetryCycleStartTime is the start time of the last retry cycle (used to determine how often an operation
+	// must be retried until we give up).
+	// +optional
+	RetryCycleStartTime *metav1.Time
+	// Seed is the name of the seed cluster that runs the control plane of the Shoot. This value is only written
+	// after a successful create/reconcile operation. It will be used when control planes are moved between Seeds.
+	Seed string
+	// TechnicalID is the name that is used for creating the Seed namespace, the infrastructure resources, and
+	// basically everything that is related to this particular Shoot.
+	TechnicalID string
 	// UID is a unique identifier for the Shoot cluster to avoid portability between Kubernetes clusters.
 	// It is used to compute unique hashes.
 	UID types.UID
@@ -952,6 +958,8 @@ const (
 	DNSAWSRoute53 DNSProvider = "aws-route53"
 	// DNSGoogleCloudDNS is a constant for the 'google-clouddns' DNS provider.
 	DNSGoogleCloudDNS DNSProvider = "google-clouddns"
+	//DNSOpenstackDesignate is a constance for the designate DNS provider
+	DNSOpenstackDesignate DNSProvider = "openstack-designate"
 )
 
 // CloudProvider is a string alias.
@@ -1033,6 +1041,14 @@ type OIDCConfig struct {
 	// The URL of the OpenID issuer, only HTTPS scheme will be accepted. If set, it will be used to verify the OIDC JSON Web Token (JWT).
 	// +optional
 	IssuerURL *string
+	// ATTENTION: Only meaningful for Kubernetes >= 1.11
+	// key=value pairs that describes a required claim in the ID Token. If set, the claim is verified to be present in the ID Token with a matching value.
+	// +optional
+	RequiredClaims map[string]string
+	// ATTENTION: Only meaningful for Kubernetes >= 1.10
+	// List of allowed JOSE asymmetric signing algorithms. JWTs with a 'alg' header value not in this list will be rejected. Values are defined by RFC 7518 https://tools.ietf.org/html/rfc7518#section-3.1
+	// +optional
+	SigningAlgs []string
 	// The OpenID claim to use as the user name. Note that claims other than the default ('sub') is not guaranteed to be unique and immutable. This flag is experimental, please see the authentication documentation for further details. (default "sub")
 	// +optional
 	UsernameClaim *string
@@ -1136,8 +1152,6 @@ const (
 	ShootLastOperationTypeCreate ShootLastOperationType = "Create"
 	// ShootLastOperationTypeReconcile indicates a 'reconcile' operation.
 	ShootLastOperationTypeReconcile ShootLastOperationType = "Reconcile"
-	// ShootLastOperationTypeUpdate indicates an 'update' operation.
-	ShootLastOperationTypeUpdate ShootLastOperationType = "Update"
 	// ShootLastOperationTypeDelete indicates a 'delete' operation.
 	ShootLastOperationTypeDelete ShootLastOperationType = "Delete"
 )
@@ -1180,18 +1194,18 @@ const (
 )
 
 const (
-	// ShootEventReconciling indicates that the a Reconcile operation started.
-	ShootEventReconciling = "ReconcilingShoot"
-	// ShootEventReconciled indicates that the a Reconcile operation was successful.
-	ShootEventReconciled = "ReconciledShoot"
-	// ShootEventReconcileError indicates that the a Reconcile operation failed.
-	ShootEventReconcileError = "ReconcileError"
-	// ShootEventDeleting indicates that the a Delete operation started.
-	ShootEventDeleting = "DeletingShoot"
-	// ShootEventDeleted indicates that the a Delete operation was successful.
-	ShootEventDeleted = "DeletedShoot"
-	// ShootEventDeleteError indicates that the a Delete operation failed.
-	ShootEventDeleteError = "DeleteError"
+	// EventReconciling indicates that the a Reconcile operation started.
+	EventReconciling = "Reconciling"
+	// EventReconciled indicates that the a Reconcile operation was successful.
+	EventReconciled = "Reconciled"
+	// EventReconcileError indicates that the a Reconcile operation failed.
+	EventReconcileError = "ReconcileError"
+	// EventDeleting indicates that the a Delete operation started.
+	EventDeleting = "Deleting"
+	// EventDeleted indicates that the a Delete operation was successful.
+	EventDeleted = "Deleted"
+	// EventDeleteError indicates that the a Delete operation failed.
+	EventDeleteError = "DeleteError"
 	// ShootEventMaintenanceDone indicates that a maintenance operation has been performed.
 	ShootEventMaintenanceDone = "MaintenanceDone"
 	// ShootEventMaintenanceError indicates that a maintenance operation has failed.
@@ -1240,3 +1254,57 @@ const (
 	// ConditionCheckError is a constant for indicating that a condition could not be checked.
 	ConditionCheckError = "ConditionCheckError"
 )
+
+////////////////////////////////////////////////////
+//              Backup Infrastructure             //
+////////////////////////////////////////////////////
+
+// BackupInfrastructure holds details about backup infrastructure
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +k8s:openapi-gen=x-kubernetes-print-columns:custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SEED:.spec.seed,STATUS:.status.lastOperation.state
+type BackupInfrastructure struct {
+	metav1.TypeMeta
+	// Standard object metadata.
+	// +optional
+	metav1.ObjectMeta
+	// Specification of the Backup Infrastructure.
+	// +optional
+	Spec BackupInfrastructureSpec
+	// Most recently observed status of the Backup Infrastructure.
+	// +optional
+	Status BackupInfrastructureStatus
+}
+
+// BackupInfrastructureList is a list of BackupInfrastructure objects.
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type BackupInfrastructureList struct {
+	metav1.TypeMeta
+	// Standard list object metadata.
+	// +optional
+	metav1.ListMeta
+	// Items is the list of BackupInfrastructure.
+	Items []BackupInfrastructure
+}
+
+// BackupInfrastructureSpec is the specification of a Backup Infrastructure.
+type BackupInfrastructureSpec struct {
+	// Seed is the name of a Seed object.
+	Seed string
+	// ShootUID is a unique identifier for the Shoot cluster for which the BackupInfrastructure object is created.
+	ShootUID types.UID
+}
+
+// BackupInfrastructureStatus holds the most recently observed status of the Backup Infrastructure.
+type BackupInfrastructureStatus struct {
+	// LastOperation holds information about the last operation on the BackupInfrastructure.
+	// +optional
+	LastOperation *LastOperation
+	// LastError holds information about the last occurred error during an operation.
+	// +optional
+	LastError *LastError
+	// ObservedGeneration is the most recent generation observed for this BackupInfrastructure. It corresponds to the
+	// BackupInfrastructure's generation, which is updated on mutation by the API Server.
+	// +optional
+	ObservedGeneration *int64
+}

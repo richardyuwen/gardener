@@ -4,7 +4,6 @@
 images:
   nginx-ingress-controller: image-repository:image-tag
   ingress-default-backend: image-repository:image-tag
-  vts-ingress-exporter: image-repository:image-tag
 
 controller:
   name: controller
@@ -41,7 +40,7 @@ controller:
   ## Allows customization of the external service
   ## the ingress will be bound to via DNS
   publishService:
-    enabled: false
+    enabled: true
     ## Allows overriding of the publish service to bind to
     ## Must be <namespace>/<service_name>
     ##

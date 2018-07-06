@@ -29,6 +29,7 @@ import (
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/externalversions"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controller"
+	gardenerfeatures "github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/server"
@@ -143,17 +144,21 @@ func (o *Options) applyDefaults(in *componentconfig.ControllerManagerConfigurati
 }
 
 func (o *Options) run(stopCh chan struct{}) error {
-	config := o.config
 
 	if len(o.ConfigFile) > 0 {
 		c, err := o.loadConfigFromFile(o.ConfigFile)
 		if err != nil {
 			return err
 		}
-		config = c
+		o.config = c
 	}
 
-	gardener, err := NewGardener(config)
+	// Add feature flags
+	if err := gardenerfeatures.ControllerFeatureGate.SetFromMap(o.config.FeatureGates); err != nil {
+		return err
+	}
+
+	gardener, err := NewGardener(o.config)
 	if err != nil {
 		return err
 	}
@@ -222,7 +227,7 @@ func NewGardener(config *componentconfig.ControllerManagerConfiguration) (*Garde
 	// Initialize logger
 	logger := logger.NewLogger(config.LogLevel)
 	logger.Info("Starting Gardener controller manager...")
-
+	logger.Infof("Feature Gates: %s", gardenerfeatures.ControllerFeatureGate.String())
 	// Prepare a Kubernetes client object for the Garden cluster which contains all the Clientsets
 	// that can be used to access the Kubernetes API.
 	var (
@@ -251,11 +256,11 @@ func NewGardener(config *componentconfig.ControllerManagerConfiguration) (*Garde
 	}
 
 	// Create a GardenV1beta1Client and the respective API group scheme for the Garden API group.
-	gardenerClientset, err := gardenclientset.NewForConfig(gardenerClientConfig)
+	gardenClientset, err := gardenclientset.NewForConfig(gardenerClientConfig)
 	if err != nil {
 		return nil, err
 	}
-	k8sGardenClient.SetGardenClientset(gardenerClientset)
+	k8sGardenClient.SetGardenClientset(gardenClientset)
 
 	// Set up leader election if enabled and prepare event recorder.
 	var (
@@ -291,10 +296,12 @@ func (g *Gardener) Run(stopCh chan struct{}) error {
 	run := func(stop <-chan struct{}) {
 		go startControllers(g, stopCh)
 		<-stop
-		if _, stopChIsNotClosed := (<-stopCh); stopChIsNotClosed {
+		select {
+		case <-stopCh:
+			// can only happen if stopCh is already closed because it's never written to it
+		default:
 			close(stopCh)
 		}
-		select {}
 	}
 
 	// Start HTTP server

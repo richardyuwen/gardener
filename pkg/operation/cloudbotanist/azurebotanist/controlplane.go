@@ -34,31 +34,64 @@ func (b *AzureBotanist) GenerateCloudProviderConfig() (string, error) {
 		routeTableName      = "routeTableName"
 		securityGroupName   = "securityGroupName"
 	)
+
 	stateVariables, err := terraformer.NewFromOperation(b.Operation, common.TerraformerPurposeInfra).GetStateOutputVariables(resourceGroupName, vnetName, subnetName, routeTableName, availabilitySetName, securityGroupName)
 	if err != nil {
 		return "", err
 	}
 
-	return `cloud: AZUREPUBLICCLOUD
-tenantId: ` + string(b.Shoot.Secret.Data[TenantID]) + `
-subscriptionId: ` + string(b.Shoot.Secret.Data[SubscriptionID]) + `
-resourceGroup: ` + stateVariables[resourceGroupName] + `
-location: ` + b.Shoot.Info.Spec.Cloud.Region + `
-vnetName: ` + stateVariables[vnetName] + `
-subnetName: ` + stateVariables[subnetName] + `
-securityGroupName: ` + stateVariables[securityGroupName] + `
-routeTableName: ` + stateVariables[routeTableName] + `
-primaryAvailabilitySetName: ` + stateVariables[availabilitySetName] + `
-aadClientId: ` + string(b.Shoot.Secret.Data[ClientID]) + `
-aadClientSecret: ` + string(b.Shoot.Secret.Data[ClientSecret]) + `
+	cloudProviderConfig := `cloud: AZUREPUBLICCLOUD
+tenantId: "` + string(b.Shoot.Secret.Data[TenantID]) + `"
+subscriptionId: "` + string(b.Shoot.Secret.Data[SubscriptionID]) + `"
+resourceGroup: "` + stateVariables[resourceGroupName] + `"
+location: "` + b.Shoot.Info.Spec.Cloud.Region + `"
+vnetName: "` + stateVariables[vnetName] + `"
+subnetName: "` + stateVariables[subnetName] + `"
+securityGroupName: "` + stateVariables[securityGroupName] + `"
+routeTableName: "` + stateVariables[routeTableName] + `"
+primaryAvailabilitySetName: "` + stateVariables[availabilitySetName] + `"
+aadClientId: "` + string(b.Shoot.Secret.Data[ClientID]) + `"
+aadClientSecret: "` + string(b.Shoot.Secret.Data[ClientSecret]) + `"
 cloudProviderBackoff: true
 cloudProviderBackoffRetries: 6
 cloudProviderBackoffExponent: 1.5
 cloudProviderBackoffDuration: 5
 cloudProviderBackoffJitter: 1.0
 cloudProviderRateLimit: true
-cloudProviderRateLimitQPS: 1.0
-cloudProviderRateLimitBucket: 5`, nil
+cloudProviderRateLimitQPS: 10.0
+cloudProviderRateLimitBucket: 100`
+
+	configHasWriteRateLimits, err := utils.CheckVersionMeetsConstraint(b.Shoot.Info.Spec.Kubernetes.Version, ">= 1.10")
+	if err != nil {
+		return "", err
+	}
+
+	if configHasWriteRateLimits {
+		cloudProviderConfig += `
+cloudProviderRateLimitQPSWrite: 10.0
+cloudProviderRateLimitBucketWrite: 100`
+	}
+
+	return cloudProviderConfig, nil
+}
+
+// RefreshCloudProviderConfig refreshes the cloud provider credentials in the existing cloud
+// provider config.
+func (b *AzureBotanist) RefreshCloudProviderConfig(currentConfig map[string]string) map[string]string {
+	var (
+		existing  = currentConfig[common.CloudProviderConfigMapKey]
+		updated   = existing
+		separator = ": "
+	)
+
+	updated = common.ReplaceCloudProviderConfigKey(updated, separator, "tenantId", string(b.Shoot.Secret.Data[TenantID]))
+	updated = common.ReplaceCloudProviderConfigKey(updated, separator, "subscriptionId", string(b.Shoot.Secret.Data[SubscriptionID]))
+	updated = common.ReplaceCloudProviderConfigKey(updated, separator, "aadClientId", string(b.Shoot.Secret.Data[ClientID]))
+	updated = common.ReplaceCloudProviderConfigKey(updated, separator, "aadClientSecret", string(b.Shoot.Secret.Data[ClientSecret]))
+
+	return map[string]string{
+		common.CloudProviderConfigMapKey: updated,
+	}
 }
 
 // GenerateKubeAPIServerConfig generates the cloud provider specific values which are required to render the
@@ -90,11 +123,14 @@ func (b *AzureBotanist) GenerateKubeSchedulerConfig() (map[string]interface{}, e
 // GenerateEtcdBackupConfig returns the etcd backup configuration for the etcd Helm chart.
 func (b *AzureBotanist) GenerateEtcdBackupConfig() (map[string][]byte, map[string]interface{}, error) {
 	var (
-		storageAccountName = "storageAccountName"
-		storageAccessKey   = "storageAccessKey"
-		containerName      = "containerName"
+		storageAccountName       = "storageAccountName"
+		storageAccessKey         = "storageAccessKey"
+		containerName            = "containerName"
+		backupInfrastructureName = common.GenerateBackupInfrastructureName(b.Shoot.SeedNamespace, b.Shoot.Info.Status.UID)
+		backupNamespace          = common.GenerateBackupNamespaceName(backupInfrastructureName)
 	)
-	stateVariables, err := terraformer.NewFromOperation(b.Operation, common.TerraformerPurposeBackup).GetStateOutputVariables(storageAccountName, storageAccessKey, containerName)
+
+	stateVariables, err := terraformer.New(b.Logger, b.K8sSeedClient, common.TerraformerPurposeBackup, backupInfrastructureName, backupNamespace, b.ImageVector).GetStateOutputVariables(storageAccountName, storageAccessKey, containerName)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -21,14 +21,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // ApplyChart takes a Kubernetes client <k8sClient>, chartRender <renderer>, path to a chart <chartPath>, name of the release <name>,
@@ -168,18 +167,61 @@ func GenerateTerraformVariablesEnvironment(secret *corev1.Secret, keyValueMap ma
 	return m
 }
 
-// CheckConfirmationDeletionTimestampValid checks whether an annotation with the key of the constant <ConfirmationDeletionTimestamp>
-// variable exists on the provided <shoot> object and if yes, whether its value is equal to the Shoot's
-// '.metadata.deletionTimestamp' value. In that case, it returns true, otherwise false.
-func CheckConfirmationDeletionTimestampValid(objectMeta metav1.ObjectMeta) bool {
-	deletionTimestamp := objectMeta.DeletionTimestamp
-	if !metav1.HasAnnotation(objectMeta, ConfirmationDeletionTimestamp) || deletionTimestamp == nil {
-		return false
+// ExtractShootName returns Shoot resource name extracted from provided <backupInfrastructureName>.
+func ExtractShootName(backupInfrastructureName string) string {
+	tokens := strings.Split(backupInfrastructureName, "-")
+	return strings.Join(tokens[:len(tokens)-1], "-")
+}
+
+// GenerateBackupInfrastructureName returns BackupInfrastructure resource name created from provided <seedNamespace> and <shootUID>.
+func GenerateBackupInfrastructureName(seedNamespace string, shootUID types.UID) string {
+	// TODO: Remove this and use only "--" as separator, once we have all shoots deployed as per new naming conventions.
+	if IsFollowingNewNamingConvention(seedNamespace) {
+		return fmt.Sprintf("%s--%s", seedNamespace, utils.ComputeSHA1Hex([]byte(shootUID))[:5])
 	}
-	timestamp, err := time.Parse(time.RFC3339, objectMeta.Annotations[ConfirmationDeletionTimestamp])
-	if err != nil {
-		return false
+	return fmt.Sprintf("%s-%s", seedNamespace, utils.ComputeSHA1Hex([]byte(shootUID))[:5])
+}
+
+// GenerateBackupNamespaceName returns Backup namespace name created from provided <backupInfrastructureName>.
+func GenerateBackupNamespaceName(backupInfrastructureName string) string {
+	return fmt.Sprintf("%s--%s", BackupNamespacePrefix, backupInfrastructureName)
+}
+
+// IsFollowingNewNamingConvention determines whether the new naming convention followed for shoot resources.
+// TODO: Remove this and use only "--" as separator, once we have all shoots deployed as per new naming conventions.
+func IsFollowingNewNamingConvention(seedNamespace string) bool {
+	return len(strings.Split(seedNamespace, "--")) > 2
+}
+
+// ReplaceCloudProviderConfigKey replaces a key with the new value in the given cloud provider config.
+func ReplaceCloudProviderConfigKey(cloudProviderConfig, separator, key, value string) string {
+	return regexp.MustCompile(fmt.Sprintf("%s%s(.*)\n", key, separator)).ReplaceAllString(cloudProviderConfig, fmt.Sprintf("%s%s%s\n", key, separator, value))
+}
+
+// DetermineErrorCode determines the Garden error code for the given error message.
+func DetermineErrorCode(message string) error {
+	var (
+		code                         gardenv1beta1.ErrorCode
+		unauthorizedRegexp           = regexp.MustCompile(`(?i)(Unauthorized|InvalidClientTokenId|SignatureDoesNotMatch|Authentication failed|AuthFailure|invalid character|invalid_grant|invalid_client)`)
+		quotaExceededRegexp          = regexp.MustCompile(`(?i)(LimitExceeded|Quota)`)
+		insufficientPrivilegesRegexp = regexp.MustCompile(`(?i)(AccessDenied|Forbidden)`)
+		dependenciesRegexp           = regexp.MustCompile(`(?i)(PendingVerification|Access Not Configured|DependencyViolation)`)
+	)
+
+	switch {
+	case unauthorizedRegexp.MatchString(message):
+		code = gardenv1beta1.ErrorInfraUnauthorized
+	case quotaExceededRegexp.MatchString(message):
+		code = gardenv1beta1.ErrorInfraQuotaExceeded
+	case insufficientPrivilegesRegexp.MatchString(message):
+		code = gardenv1beta1.ErrorInfraInsufficientPrivileges
+	case dependenciesRegexp.MatchString(message):
+		code = gardenv1beta1.ErrorInfraDependencies
 	}
-	confirmationDeletionTimestamp := metav1.NewTime(timestamp)
-	return confirmationDeletionTimestamp.Equal(deletionTimestamp)
+
+	if len(code) != 0 {
+		message = fmt.Sprintf("CODE:%s %s", code, message)
+	}
+
+	return errors.New(message)
 }
