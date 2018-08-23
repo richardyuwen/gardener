@@ -1163,6 +1163,9 @@ type Kubernetes struct {
 	// KubeAPIServer contains configuration settings for the kube-apiserver.
 	// +optional
 	KubeAPIServer *KubeAPIServerConfig
+	// CloudControllerManager contains configuration settings for the cloud-controller-manager.
+	// +optional
+	CloudControllerManager *CloudControllerManagerConfig
 	// KubeControllerManager contains configuration settings for the kube-controller-manager.
 	// +optional
 	KubeControllerManager *KubeControllerManagerConfig
@@ -1247,6 +1250,11 @@ type AdmissionPlugin struct {
 	// SEE ALSO: https://github.com/gardener/gardener/pull/322
 	// +optional
 	Config *string
+}
+
+// CloudControllerManagerConfig contains configuration settings for the cloud-controller-manager.
+type CloudControllerManagerConfig struct {
+	KubernetesConfig
 }
 
 // KubeControllerManagerConfig contains configuration settings for the kube-controller-manager.

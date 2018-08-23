@@ -1153,6 +1153,9 @@ type Kubernetes struct {
 	// KubeAPIServer contains configuration settings for the kube-apiserver.
 	// +optional
 	KubeAPIServer *KubeAPIServerConfig `json:"kubeAPIServer,omitempty"`
+	// CloudControllerManager contains configuration settings for the cloud-controller-manager.
+	// +optional
+	CloudControllerManager *CloudControllerManagerConfig `json:"cloudControllerManager,omitempty"`
 	// KubeControllerManager contains configuration settings for the kube-controller-manager.
 	// +optional
 	KubeControllerManager *KubeControllerManagerConfig `json:"kubeControllerManager,omitempty"`
@@ -1237,6 +1240,11 @@ type AdmissionPlugin struct {
 	// SEE ALSO: https://github.com/gardener/gardener/pull/322
 	// +optional
 	Config *string `json:"config,omitempty"`
+}
+
+// CloudControllerManagerConfig contains configuration settings for the cloud-controller-manager.
+type CloudControllerManagerConfig struct {
+	KubernetesConfig `json:",inline"`
 }
 
 // KubeControllerManagerConfig contains configuration settings for the kube-controller-manager.
