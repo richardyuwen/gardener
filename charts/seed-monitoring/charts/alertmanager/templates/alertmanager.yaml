@@ -1,4 +1,3 @@
-{{- if .Values.emailConfigs }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -59,6 +58,10 @@ spec:
         garden.sapcloud.io/role: monitoring
         component: alertmanager
         role: monitoring
+        networking.gardener.cloud/to-dns: allowed
+        networking.gardener.cloud/to-public-networks: allowed
+        networking.gardener.cloud/to-private-networks: allowed
+        networking.gardener.cloud/from-prometheus: allowed
     spec:
       containers:
       - name: alertmanager
@@ -83,7 +86,7 @@ spec:
               fieldPath: status.podIP
         ports:
         - containerPort: 9093
-          name: web
+          name: metrics
           protocol: TCP
         - containerPort: 6783
           name: cluster
@@ -91,13 +94,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /api/v1/status
-            port: web
+            port: metrics
             scheme: HTTP
           failureThreshold: 10
         readinessProbe:
           httpGet:
             path: /api/v1/status
-            port: web
+            port: metrics
             scheme: HTTP
           periodSeconds: 5
           timeoutSeconds: 3
@@ -148,4 +151,16 @@ spec:
       resources:
         requests:
           storage: {{ .Values.storage }}
-{{- end }}
+---
+apiVersion: "autoscaling.k8s.io/v1beta2"
+kind: VerticalPodAutoscaler
+metadata:
+  name: alertmanager-vpa
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRef:
+    apiVersion: {{ include "deploymentversion" . }}
+    kind: StatefulSet
+    name: alertmanager
+  updatePolicy:
+    updateMode: "Off"

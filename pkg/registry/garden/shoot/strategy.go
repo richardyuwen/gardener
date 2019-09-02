@@ -19,10 +19,12 @@ import (
 	"fmt"
 
 	"github.com/gardener/gardener/pkg/api"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/garden"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/apis/garden/validation"
 	"github.com/gardener/gardener/pkg/operation/common"
+
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -30,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/registry/generic"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
 )
@@ -41,6 +44,9 @@ type shootStrategy struct {
 
 // Strategy defines the storage strategy for Shoots.
 var Strategy = shootStrategy{api.Scheme, names.SimpleNameGenerator}
+
+// Strategy should implement rest.RESTCreateUpdateStrategy
+var _ rest.RESTCreateUpdateStrategy = Strategy
 
 func (shootStrategy) NamespaceScoped() bool {
 	return true
@@ -57,6 +63,7 @@ func (shootStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
 		finalizers.Insert(gardenv1beta1.GardenerName)
 	}
 	shoot.Finalizers = finalizers.UnsortedList()
+
 }
 
 func (shootStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
@@ -67,9 +74,43 @@ func (shootStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Obje
 	if mustIncreaseGeneration(oldShoot, newShoot) {
 		newShoot.Generation = oldShoot.Generation + 1
 	}
+
+	// TODO: (mvladev) there was a bug in the validation of GCP & openstack
+	// and clusters with more than one Worker network were allowed to
+	// be created.
+	// This is used to fix the broken Shoots on update.
+	// Remove those 2 checks after several releases.
+	if gcp := newShoot.Spec.Cloud.GCP; gcp != nil {
+		if len(gcp.Networks.Workers) > 1 {
+			gcp.Networks.Workers = []garden.CIDR{gcp.Networks.Workers[0]}
+		}
+	}
+
+	if gcp := oldShoot.Spec.Cloud.GCP; gcp != nil {
+		if len(gcp.Networks.Workers) > 1 {
+			gcp.Networks.Workers = []garden.CIDR{gcp.Networks.Workers[0]}
+		}
+	}
+
+	if openstack := newShoot.Spec.Cloud.OpenStack; openstack != nil {
+		if len(openstack.Networks.Workers) > 1 {
+			openstack.Networks.Workers = []garden.CIDR{openstack.Networks.Workers[0]}
+		}
+	}
+
+	if openstack := oldShoot.Spec.Cloud.OpenStack; openstack != nil {
+		if len(openstack.Networks.Workers) > 1 {
+			openstack.Networks.Workers = []garden.CIDR{openstack.Networks.Workers[0]}
+		}
+	}
+
 }
 
 func mustIncreaseGeneration(oldShoot, newShoot *garden.Shoot) bool {
+	var (
+		oldPurpose, newPurpose string
+	)
+
 	// The Shoot specification changes.
 	if !apiequality.Semantic.DeepEqual(oldShoot.Spec, newShoot.Spec) {
 		return true
@@ -84,15 +125,22 @@ func mustIncreaseGeneration(oldShoot, newShoot *garden.Shoot) bool {
 		mustIncrease := false
 
 		switch lastOperation.State {
-		case garden.ShootLastOperationStateFailed:
+		case garden.LastOperationStateFailed:
 			// The shoot state is failed and the retry annotation is set.
 			if val, ok := newShoot.Annotations[common.ShootOperation]; ok && val == common.ShootOperationRetry {
 				mustIncrease = true
 			}
 		default:
-			// The shoot state is not failed and the reconcile annotation is set.
-			if val, ok := newShoot.Annotations[common.ShootOperation]; ok && val == common.ShootOperationReconcile {
-				mustIncrease = true
+			// The shoot state is not failed and the reconcile or rotate-credentials annotation is set.
+			if val, ok := newShoot.Annotations[common.ShootOperation]; ok {
+				if val == common.ShootOperationReconcile {
+					mustIncrease = true
+				}
+				if val == common.ShootOperationRotateKubeconfigCredentials {
+					// We don't want to remove the annotation so that the controller-manager can pick it up and rotate
+					// the credentials. It has to remove the annotation after it is done.
+					return true
+				}
 			}
 		}
 
@@ -100,6 +148,12 @@ func mustIncreaseGeneration(oldShoot, newShoot *garden.Shoot) bool {
 			delete(newShoot.Annotations, common.ShootOperation)
 			return true
 		}
+	}
+
+	oldPurpose = oldShoot.ObjectMeta.Annotations[gardencorev1alpha1.GardenPurpose]
+	newPurpose = newShoot.ObjectMeta.Annotations[gardencorev1alpha1.GardenPurpose]
+	if oldPurpose != newPurpose {
+		return true
 	}
 
 	return false
@@ -157,12 +211,12 @@ func ToSelectableFields(shoot *garden.Shoot) fields.Set {
 }
 
 // GetAttrs returns labels and fields of a given object for filtering purposes.
-func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, bool, error) {
+func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 	shoot, ok := obj.(*garden.Shoot)
 	if !ok {
-		return nil, nil, false, fmt.Errorf("not a shoot")
+		return nil, nil, fmt.Errorf("not a shoot")
 	}
-	return labels.Set(shoot.ObjectMeta.Labels), ToSelectableFields(shoot), false, nil
+	return labels.Set(shoot.ObjectMeta.Labels), ToSelectableFields(shoot), nil
 }
 
 // SeedTriggerFunc matches correct seed when watching.

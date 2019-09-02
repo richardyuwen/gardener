@@ -81,7 +81,7 @@ global:
           - kubelet
           - system:kube-controller-manager
           - system:kube-scheduler
-          - system:kube-addon-manager
+          - system:gardener-resource-manager
           - system:kube-aggregator
           - system:kube-proxy
           - system:apiserver
@@ -96,7 +96,8 @@ global:
           nonResourceURLs:
           - /healthz*
           - /version
-          - /swagger*
+          - /openapi/*
+          - /swagger* # Swagger endpoint is deprecated with https://github.com/kubernetes/kubernetes/pull/73148
         - level: None
           resources:
           - group: ""
@@ -137,47 +138,15 @@ global:
         cpu: 750m
         memory: 512Mi
     internalDomain:
-      provider: aws-route53 # aws-route53, google-clouddns, alicloud-dns or openstack-designate
-      hostedZoneID: Z3ABCDE1FGHIJK
+      provider: aws-route53 # depends on the DNS extension of your choice
       domain: example.com
-      credentials:
-        # for aws-route53 we need to provide the following keys:
-        accessKeyID: access-key-id-with-route53-privileges
-        secretAccessKey: secret-access-key-with-route53-privileges
-        #
-        # for google-clouddns we need to provide the following keys:
-        # serviceaccount.json: '{"type": "service_account", "project_id": "...", ...}'
-        #
-        # for alicloud-dns we need to provide the following keys:
-        # accessKeyID: access-key-id-with-aliclouddns-privileges
-        # accessKeySecret: access-key-secret-with-aliclouddns-privileges
-        #
-        # for openstack-designate we need to provide the following keys:
-        # authURL: my-keystone-url
-        # domainName: my-domain
-        # tenantName: my-tenant
-        # userDomainName: my-user-domain
-        # username: my-user-name
-        # password: my-password
+      credentials: {}
+        # actual keys here depend on the DNS extension of your choice
     defaultDomains: []
     # - domain: example.com
-    #   provider: aws-route53 # aws-route53, google-clouddns or openstack-designate
-    #   hostedZoneID: Z3ABCDE1FGHIJK
-    #   credentials:
-    #     # for aws-route53 we need to provide the following keys:
-    #     accessKeyID: access-key-id-with-route53-privileges
-    #     secretAccessKey: secret-access-key-with-route53-privileges
-    #
-    #     # for google-clouddns we need to provide the following keys:
-    #     serviceaccount.json: '{"type": "service_account", "project_id": "...", ...}'
-    #
-    #     # for openstack-designate we need to provide the following keys:
-    #     authURL: my-keystone-url
-    #     domainName: my-domain
-    #     tenantName: my-tenant
-    #     userDomainName: my-user-domain
-    #     username: my-user-name
-    #     password: my-password
+    #   provider: aws-route53 # depends on the DNS extension of your choice
+    #   credentials: {}
+    #     # actual keys here depend on the DNS extension of your choice
     alertingSMTP: []
     # - to: email-address-to-send-alerts-to
     #   from: email-address-to-send-alerts-from
@@ -190,8 +159,6 @@ global:
     additionalVolumes: []
     additionalVolumeMounts: []
     env: []
-  # certificateManagement: |
-  #   Please find an example in example/10-secret-certificate-management-config.yaml
   # imageVectorOverwrite: |
   #  Please find documentation in docs/deployment/image_vector.md
     config:
@@ -201,10 +168,15 @@ global:
         qps: 100
         burst: 130
       controllers:
+        plant:
+          concurrentSyncs: 20
+          syncPeriod: 30s
         shoot:
           concurrentSyncs: 20
           syncPeriod: 1h
           retryDuration: 24h
+          respectSyncPeriodOverwrite: false
+          reconcileInMaintenanceOnly: false
         shootCare:
           concurrentSyncs: 5
           syncPeriod: 30s
@@ -223,6 +195,13 @@ global:
         backupInfrastructure:
           concurrentSyncs: 20
           syncPeriod: 24h
+        backupBucket:
+          concurrentSyncs: 20
+          syncPeriod: 10m
+        backupEntry:
+          concurrentSyncs: 20
+          syncPeriod: 10m
+          deletionGracePeriodHours: 0
         seed:
           concurrentSyncs: 5
           syncPeriod: 1m
@@ -262,7 +241,51 @@ global:
       shootBackup:
         schedule: "0 */24 * * *"
       featureGates: {}
-
+  scheduler:
+    enabled: true
+    replicaCount: 1
+    serviceAccountName: gardener-scheduler
+    image:
+      repository: eu.gcr.io/gardener-project/gardener/scheduler
+      tag: latest
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 50Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+    config:
+      clientConnection:
+        acceptContentTypes: application/json
+        contentType: application/json
+        qps: 100
+        burst: 130
+      leaderElection:
+        leaderElect: true
+        leaseDuration: 15s
+        renewDeadline: 10s
+        retryPeriod: 2s
+        resourceLock: configmaps
+      # `discovery` allows specifying options for the cached discovery client
+      discovery:
+      #  discoveryCacheDir: /tmp/cache-dir
+      #  httpCacheDir: /tmp/http-cache-dir
+      #  ttl: 10s
+      logLevel: info
+      server:
+        http:
+          bindAddress: 0.0.0.0
+          port: 10251
+#     schedulers:
+#       backupBucket:
+#         retrySyncPeriod: 15s
+#         concurrentSyncs: 5
+#       shoot:
+#         retrySyncPeriod: 15s
+#         concurrentSyncs: 5
+#         candidateDeterminationStrategy: SameRegion # either {SameRegion,MinimalDistance}
   # Deployment related configuration
   deployment:
     virtualGarden:

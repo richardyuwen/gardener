@@ -37,10 +37,16 @@ func (f *genericInformer) Lister() cache.GenericLister {
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
 	switch resource {
 	// Group=core.gardener.cloud, Version=internalVersion
+	case core.SchemeGroupVersion.WithResource("backupbuckets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().InternalVersion().BackupBuckets().Informer()}, nil
+	case core.SchemeGroupVersion.WithResource("backupentries"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().InternalVersion().BackupEntries().Informer()}, nil
 	case core.SchemeGroupVersion.WithResource("controllerinstallations"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().InternalVersion().ControllerInstallations().Informer()}, nil
 	case core.SchemeGroupVersion.WithResource("controllerregistrations"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().InternalVersion().ControllerRegistrations().Informer()}, nil
+	case core.SchemeGroupVersion.WithResource("plants"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().InternalVersion().Plants().Informer()}, nil
 
 	}
 

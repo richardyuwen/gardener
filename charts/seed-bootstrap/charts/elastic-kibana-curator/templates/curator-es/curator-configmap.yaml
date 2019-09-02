@@ -6,6 +6,7 @@ metadata:
   labels:
     app: curator
     role: logging
+    garden.sapcloud.io/role: logging
 data:
   action_file.yml: |-
     actions:
@@ -34,14 +35,16 @@ data:
     client:
       hosts:
         - elasticsearch-logging.{{ .Release.Namespace }}.svc
-      port: 9200
+      port: {{ .Values.global.elasticsearchPorts.db }}
       url_prefix:
       use_ssl: False
       certificate:
       client_cert:
       client_key:
       ssl_no_validate: False
-      http_auth:
+{{- if .Values.searchguard.enabled }}
+      http_auth: '{{ .Values.curator.sgUsername }}:{{ .Values.curator.sgPassword }}'
+{{- end }}
       timeout: 30
       master_only: False
     logging:
@@ -58,6 +61,7 @@ metadata:
   labels:
     app: curator
     role: logging
+    garden.sapcloud.io/role: logging
 data:
   action_file.yml: |-
     actions:
@@ -118,14 +122,16 @@ data:
     client:
       hosts:
         - elasticsearch-logging.{{ .Release.Namespace }}.svc
-      port: 9200
+      port: {{ .Values.global.elasticsearchPorts.db }}
       url_prefix:
       use_ssl: False
       certificate:
       client_cert:
       client_key:
       ssl_no_validate: False
-      http_auth:
+{{- if .Values.searchguard.enabled }}
+      http_auth: '{{ .Values.curator.sgUsername }}:{{ .Values.curator.sgPassword }}'
+{{- end }}
       timeout: 30
       master_only: False
     logging:

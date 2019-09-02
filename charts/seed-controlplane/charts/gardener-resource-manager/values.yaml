@@ -1,0 +1,16 @@
+images:
+  gardener-resource-manager: image-repository:image-tag
+
+resources:
+  requests:
+    cpu: 23m
+    memory: 47Mi
+  limits:
+    cpu: 400m
+    memory: 512Mi
+
+replicas: 1
+syncPeriod: 1m0s
+concurrentSyncs: 20
+
+podAnnotations: {}

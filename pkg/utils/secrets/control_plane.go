@@ -20,12 +20,18 @@ import (
 	"github.com/gardener/gardener/pkg/utils"
 )
 
+const (
+	// DataKeyKubeconfig is the key in a secret data holding the kubeconfig.
+	DataKeyKubeconfig = "kubeconfig"
+)
+
 // ControlPlaneSecretConfig is a struct which inherits from CertificateSecretConfig and is extended with a couple of additional
 // properties. A control plane secret will always contain a server/client certificate and optionally a kubeconfig.
 type ControlPlaneSecretConfig struct {
 	*CertificateSecretConfig
 
 	BasicAuth *BasicAuth
+	Token     *Token
 
 	KubeConfigRequest *KubeConfigRequest
 }
@@ -42,6 +48,7 @@ type ControlPlane struct {
 
 	Certificate *Certificate
 	BasicAuth   *BasicAuth
+	Token       *Token
 	Kubeconfig  []byte
 }
 
@@ -50,28 +57,29 @@ func (s *ControlPlaneSecretConfig) GetName() string {
 	return s.CertificateSecretConfig.Name
 }
 
-// Generate computes a secret for a control plane component of the clusters managed by Gardener.
-// It may include a Kubeconfig.
+// Generate implements ConfigInterface.
 func (s *ControlPlaneSecretConfig) Generate() (Interface, error) {
-	certificate, err := s.CertificateSecretConfig.Generate()
+	return s.GenerateControlPlane()
+}
+
+// GenerateControlPlane computes a secret for a control plane component of the clusters managed by Gardener.
+// It may include a Kubeconfig.
+func (s *ControlPlaneSecretConfig) GenerateControlPlane() (*ControlPlane, error) {
+	certificate, err := s.CertificateSecretConfig.GenerateCertificate()
 	if err != nil {
 		return nil, err
-	}
-
-	cert, ok := certificate.(*Certificate)
-	if !ok {
-		return nil, fmt.Errorf("certificate '%s' is not of the correct type: '%T'", s.GetName(), certificate)
 	}
 
 	controlPlane := &ControlPlane{
 		Name: s.Name,
 
-		Certificate: cert,
+		Certificate: certificate,
 		BasicAuth:   s.BasicAuth,
+		Token:       s.Token,
 	}
 
 	if s.KubeConfigRequest != nil {
-		kubeconfig, err := generateKubeconfig(s, cert)
+		kubeconfig, err := generateKubeconfig(s, certificate)
 		if err != nil {
 			return nil, err
 		}
@@ -84,18 +92,25 @@ func (s *ControlPlaneSecretConfig) Generate() (Interface, error) {
 // SecretData computes the data map which can be used in a Kubernetes secret.
 func (c *ControlPlane) SecretData() map[string][]byte {
 	data := map[string][]byte{
-		DataKeyCertificateCA:          c.Certificate.CA.CertificatePEM,
-		fmt.Sprintf("%s.key", c.Name): c.Certificate.PrivateKeyPEM,
-		fmt.Sprintf("%s.crt", c.Name): c.Certificate.CertificatePEM,
+		DataKeyCertificateCA: c.Certificate.CA.CertificatePEM,
+	}
+
+	if c.Certificate.CertificatePEM != nil && c.Certificate.PrivateKeyPEM != nil {
+		data[fmt.Sprintf("%s.key", c.Name)] = c.Certificate.PrivateKeyPEM
+		data[fmt.Sprintf("%s.crt", c.Name)] = c.Certificate.CertificatePEM
 	}
 
 	if c.BasicAuth != nil {
-		data["username"] = []byte(c.BasicAuth.Username)
-		data["password"] = []byte(c.BasicAuth.Password)
+		data[DataKeyUserName] = []byte(c.BasicAuth.Username)
+		data[DataKeyPassword] = []byte(c.BasicAuth.Password)
+	}
+
+	if c.Token != nil {
+		data[DataKeyToken] = []byte(c.Token.Token)
 	}
 
 	if c.Kubeconfig != nil {
-		data["kubeconfig"] = c.Kubeconfig
+		data[DataKeyKubeconfig] = c.Kubeconfig
 	}
 
 	return data
@@ -106,17 +121,23 @@ func (c *ControlPlane) SecretData() map[string][]byte {
 // containing the Basic Authentication credentials is added to the Kubeconfig.
 func generateKubeconfig(secret *ControlPlaneSecretConfig, certificate *Certificate) ([]byte, error) {
 	values := map[string]interface{}{
-		"APIServerURL": secret.KubeConfigRequest.APIServerURL,
+		"APIServerURL":  secret.KubeConfigRequest.APIServerURL,
+		"CACertificate": utils.EncodeBase64(certificate.CA.CertificatePEM),
+		"ClusterName":   secret.KubeConfigRequest.ClusterName,
+	}
 
-		"CACertificate":     utils.EncodeBase64(secret.CertificateSecretConfig.SigningCA.CertificatePEM),
-		"ClientCertificate": utils.EncodeBase64(certificate.CertificatePEM),
-		"ClientKey":         utils.EncodeBase64(certificate.PrivateKeyPEM),
-		"ClusterName":       secret.KubeConfigRequest.ClusterName,
+	if certificate.CertificatePEM != nil && certificate.PrivateKeyPEM != nil {
+		values["ClientCertificate"] = utils.EncodeBase64(certificate.CertificatePEM)
+		values["ClientKey"] = utils.EncodeBase64(certificate.PrivateKeyPEM)
 	}
 
 	if secret.BasicAuth != nil {
 		values["BasicAuthUsername"] = secret.BasicAuth.Username
 		values["BasicAuthPassword"] = secret.BasicAuth.Password
+	}
+
+	if secret.Token != nil {
+		values["Token"] = secret.Token.Token
 	}
 
 	return utils.RenderLocalTemplate(kubeconfigTemplate, values)
@@ -135,15 +156,28 @@ contexts:
 - name: {{ .ClusterName }}
   context:
     cluster: {{ .ClusterName }}
+{{- if and .ClientCertificate .ClientKey }}
     user: {{ .ClusterName }}
+{{- else if .Token }}
+    user: {{ .ClusterName }}-token
+{{- else if and .BasicAuthUsername .BasicAuthPassword }}
+    user: {{ .ClusterName }}-basic-auth
+{{- end }}
 users:
+{{- if and .ClientCertificate .ClientKey }}
 - name: {{ .ClusterName }}
   user:
     client-certificate-data: {{ .ClientCertificate }}
     client-key-data: {{ .ClientKey }}
+{{- end }}
+{{- if .Token }}
+- name: {{ .ClusterName }}-token
+  user:
+    token: {{ .Token }}
+{{- end }}
 {{- if and .BasicAuthUsername .BasicAuthPassword }}
 - name: {{ .ClusterName }}-basic-auth
   user:
     username: {{ .BasicAuthUsername }}
     password: {{ .BasicAuthPassword }}
-{{- end}}`
+{{- end  }}`

@@ -18,27 +18,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/gardener/gardener/pkg/client/kubernetes"
-	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/rest"
 	"strings"
 	"time"
 
-	rbacv1 "k8s.io/api/rbac/v1"
-
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
-	batchv1 "k8s.io/api/batch/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
+	gardencorev1alpha1helper "github.com/gardener/gardener/pkg/apis/core/v1alpha1/helper"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
+	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/retry"
+
 	"github.com/sirupsen/logrus"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const jobNameLabel = "job-name"
@@ -98,6 +98,13 @@ func New(
 		stateName:     prefix + common.TerraformerStateSuffix,
 		podName:       fmt.Sprintf("%s-%s", prefix+common.TerraformerPodSuffix, podSuffix),
 		jobName:       prefix + common.TerraformerJobSuffix,
+
+		activeDeadlineSeconds: int64(3600),
+		jobBackoffLimit:       int32(3),
+
+		deadlineCleaning: 10 * time.Minute,
+		deadlinePod:      10 * time.Minute,
+		deadlineJob:      20 * time.Minute,
 	}
 }
 
@@ -114,7 +121,7 @@ func (t *Terraformer) Destroy() error {
 	if err := t.execute(context.TODO(), "destroy"); err != nil {
 		return err
 	}
-	return t.cleanupConfiguration(context.TODO())
+	return t.CleanupConfiguration(context.TODO())
 }
 
 // execute creates a Terraform Job which runs the provided scriptName (apply or destroy), waits for the Job to be completed
@@ -129,21 +136,21 @@ func (t *Terraformer) execute(ctx context.Context, scriptName string) error {
 	)
 
 	// We should retry the preparation check in order to allow the kube-apiserver to actually create the ConfigMaps.
-	if err := wait.PollImmediate(5*time.Second, 30*time.Second, func() (bool, error) {
+	if err := retry.UntilTimeout(ctx, 5*time.Second, 30*time.Second, func(ctx context.Context) (done bool, err error) {
 		numberOfExistingResources, err := t.prepare(ctx)
 		if err != nil {
-			return false, err
+			return retry.SevereError(err)
 		}
 		if numberOfExistingResources == 0 {
 			t.logger.Debug("All ConfigMaps/Secrets do not exist, can not execute the Terraform Job.")
-			return true, nil
+			return retry.Ok()
 		} else if numberOfExistingResources == numberOfConfigResources {
 			t.logger.Debug("All ConfigMaps/Secrets exist, will execute the Terraform Job.")
 			execute = true
-			return true, nil
+			return retry.Ok()
 		} else {
 			t.logger.Error("Can not execute Terraform Job as ConfigMaps/Secrets are missing!")
-			return false, nil
+			return retry.MinorError(fmt.Errorf("%d/%d terraform resources are missing", numberOfConfigResources-numberOfExistingResources, numberOfConfigResources))
 		}
 	}); err != nil {
 		return err
@@ -162,7 +169,6 @@ func (t *Terraformer) execute(ctx context.Context, scriptName string) error {
 	}
 
 	if !skipPod {
-
 		if err := t.deployTerraformerPod(ctx, "validate"); err != nil {
 			return err
 		}
@@ -223,36 +229,49 @@ func (t *Terraformer) execute(ctx context.Context, scriptName string) error {
 		if terraformErrors := retrieveTerraformErrors(logList); terraformErrors != nil {
 			errorMessage += fmt.Sprintf(" The following issues have been found in the logs:\n\n%s", strings.Join(terraformErrors, "\n\n"))
 		}
-		return common.DetermineError(errorMessage)
+		return gardencorev1alpha1helper.DetermineError(errorMessage)
 	}
 	return nil
 }
 
 const (
-	serviceAccountName = "terraformer"
-	roleName           = "garden.sapcloud.io:system:terraformers"
-	roleBindingName    = roleName
+	terraformerName = "terraformer"
+	rbacName        = "gardener.cloud:system:terraformer"
 )
 
 func (t *Terraformer) createOrUpdateServiceAccount(ctx context.Context) error {
-	serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: serviceAccountName}}
+	serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: terraformerName}}
 	return kutil.CreateOrUpdate(ctx, t.client, serviceAccount, func() error {
 		return nil
 	})
 }
 
+func (t *Terraformer) createOrUpdateRole(ctx context.Context) error {
+	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: rbacName}}
+	return kutil.CreateOrUpdate(ctx, t.client, role, func() error {
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"*"},
+			},
+		}
+		return nil
+	})
+}
+
 func (t *Terraformer) createOrUpdateRoleBinding(ctx context.Context) error {
-	roleBinding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: roleBindingName}}
+	roleBinding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: rbacName}}
 	return kutil.CreateOrUpdate(ctx, t.client, roleBinding, func() error {
 		roleBinding.RoleRef = rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     roleBindingName,
+			Kind:     "Role",
+			Name:     rbacName,
 		}
 		roleBinding.Subjects = []rbacv1.Subject{
 			{
 				Kind:      rbacv1.ServiceAccountKind,
-				Name:      serviceAccountName,
+				Name:      terraformerName,
 				Namespace: t.namespace,
 			},
 		}
@@ -262,6 +281,9 @@ func (t *Terraformer) createOrUpdateRoleBinding(ctx context.Context) error {
 
 func (t *Terraformer) createOrUpdateTerraformerAuth(ctx context.Context) error {
 	if err := t.createOrUpdateServiceAccount(ctx); err != nil {
+		return err
+	}
+	if err := t.createOrUpdateRole(ctx); err != nil {
 		return err
 	}
 	return t.createOrUpdateRoleBinding(ctx)
@@ -278,6 +300,7 @@ func (t *Terraformer) deployTerraformerPod(ctx context.Context, scriptName strin
 			pod.Labels = make(map[string]string)
 		}
 		pod.Labels[jobNameLabel] = t.jobName
+		t.addNetworkPolicyLabels(pod.Labels)
 		pod.Spec = *t.podSpec(scriptName)
 		return nil
 	})
@@ -293,8 +316,8 @@ func (t *Terraformer) deployTerraformerJob(ctx context.Context, scriptName strin
 
 	return kutil.CreateOrUpdate(ctx, t.client, job, func() error {
 		var (
-			activeDeadlineSeconds = int64(3600)
-			backoffLimit          = int32(3)
+			activeDeadlineSeconds = t.activeDeadlineSeconds
+			backoffLimit          = t.jobBackoffLimit
 			spec                  = &job.Spec
 		)
 
@@ -304,6 +327,7 @@ func (t *Terraformer) deployTerraformerJob(ctx context.Context, scriptName strin
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: t.namespace,
 				Name:      t.jobName,
+				Labels:    t.addNetworkPolicyLabels(nil),
 			},
 			Spec: *podSpec,
 		}
@@ -324,6 +348,18 @@ func (t *Terraformer) env() []corev1.EnvVar {
 	return envVars
 }
 
+func (t *Terraformer) addNetworkPolicyLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[gardencorev1alpha1.LabelNetworkPolicyToDNS] = gardencorev1alpha1.LabelNetworkPolicyAllowed
+	labels[gardencorev1alpha1.LabelNetworkPolicyToPrivateNetworks] = gardencorev1alpha1.LabelNetworkPolicyAllowed
+	labels[gardencorev1alpha1.LabelNetworkPolicyToPublicNetworks] = gardencorev1alpha1.LabelNetworkPolicyAllowed
+	labels[gardencorev1alpha1.LabelNetworkPolicyToSeedAPIServer] = gardencorev1alpha1.LabelNetworkPolicyAllowed
+
+	return labels
+}
+
 func (t *Terraformer) podSpec(scriptName string) *corev1.PodSpec {
 	const (
 		tfVolume      = "tf"
@@ -335,7 +371,8 @@ func (t *Terraformer) podSpec(scriptName string) *corev1.PodSpec {
 		tfStateVolumeMountPath = "tf-state-in"
 	)
 
-	activeDeadlineSeconds := int64(1800)
+	activeDeadlineSeconds := t.activeDeadlineSeconds
+	terminationGracePeriodSeconds := t.activeDeadlineSeconds
 	shCommand := fmt.Sprintf("sh /terraform.sh %s", scriptName)
 	if scriptName != "validate" {
 		shCommand += " 2>&1; [[ -f /success ]] && exit 0 || exit 1"
@@ -372,7 +409,8 @@ func (t *Terraformer) podSpec(scriptName string) *corev1.PodSpec {
 				},
 			},
 		},
-		ServiceAccountName: serviceAccountName,
+		ServiceAccountName:            terraformerName,
+		TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
 		Volumes: []corev1.Volume{
 			{
 				Name: tfVolume,
@@ -405,7 +443,7 @@ func (t *Terraformer) podSpec(scriptName string) *corev1.PodSpec {
 // listJobPods lists all pods which have a label 'job-name' whose value is equal to the Terraformer job name.
 func (t *Terraformer) listJobPods(ctx context.Context) (*corev1.PodList, error) {
 	podList := &corev1.PodList{}
-	if err := t.client.List(ctx, &client.ListOptions{LabelSelector: labels.SelectorFromSet(map[string]string{jobNameLabel: t.jobName})}, podList); err != nil {
+	if err := t.client.List(ctx, podList, client.MatchingLabels(map[string]string{jobNameLabel: t.jobName})); err != nil {
 		return nil, err
 	}
 	return podList, nil
@@ -433,7 +471,7 @@ func (t *Terraformer) retrievePodLogs(jobPodList *corev1.PodList) (map[string]st
 	case result := <-logChan:
 		return result, nil
 	case <-time.After(2 * time.Minute):
-		return nil, fmt.Errorf("Timeout when reading the logs of all pds created by Terraform job '%s'", t.jobName)
+		return nil, fmt.Errorf("Timeout when reading the logs of all pods created by Terraform job '%s'", t.jobName)
 	}
 }
 

@@ -8,6 +8,7 @@ metadata:
     app: kibana-logging
     role: logging
 spec:
+  revisionHistoryLimit: 0
   selector:
     matchLabels:
       app: kibana-logging
@@ -18,28 +19,25 @@ spec:
       annotations:
         checksum/kibana-objects-registration-config: {{ include (print $.Template.BasePath "/kibana/kibana-objects-registration-config.yaml") . | sha256sum }}
         checksum/kibana-saved-objects-config: {{ include (print $.Template.BasePath "/kibana/kibana-saved-objects-config.yaml") . | sha256sum }}
+        checksum/kibana-config: {{ include (print $.Template.BasePath "/kibana/kibana-configmap.yaml") . | sha256sum }}
       labels:
         garden.sapcloud.io/role: logging
         app: kibana-logging
         role: logging
+        networking.gardener.cloud/to-dns: allowed
+        networking.gardener.cloud/to-elasticsearch: allowed
     spec:
+      securityContext:
+        runAsUser: 65534
+        fsGroup: 65534
       containers:
       - name: kibana-logging
         image: {{ index .Values.global.images "kibana-oss" }}
-        resources:
-          # need more cpu upon initialization, therefore burstable class
-          limits:
-            cpu: 1000m
-            memory: 300Mi
-          requests:
-            cpu: 100m
-            memory: 200Mi
         env:
-        - name: ELASTICSEARCH_URL
-          value: http://elasticsearch-logging:{{ .Values.global.elasticsearchPorts.db }}
+          {{- toYaml .Values.kibana.env | nindent 10 }}
         ports:
-        - containerPort: {{ .Values.kibana.service.internalPort }}
-          name: ui
+        - name: ui
+          containerPort: {{ .Values.kibana.service.internalPort }}
           protocol: TCP
 {{- if .Values.kibana.readinessProbe.enabled }}
         readinessProbe:
@@ -52,23 +50,23 @@ spec:
           successThreshold: {{ .Values.kibana.readinessProbe.successThreshold }}
           failureThreshold: {{ .Values.kibana.readinessProbe.failureThreshold }}
 {{- end }}
+        volumeMounts:
+        - name: kibana-config
+          mountPath: /opt/kibana/config/
       - image: {{ index .Values.global.images "kibana-oss" }}
         name: auto-create-objects
         command:
         - /bin/sh
         - /gardener/register/register
         volumeMounts:
+        - name: kibana-config
+          mountPath: /opt/kibana/config/
         - name: register
           mountPath: /gardener/register
         - name: saved-objects
           mountPath: /gardener/saved-objects
         resources:
-          limits:
-            cpu: 10m
-            memory: 20Mi
-          requests:
-            cpu: 10m
-            memory: 20Mi
+          {{- toYaml .Values.kibana.sidecar.resources | nindent 10 }}
       volumes:
       - name: register
         configMap:
@@ -76,3 +74,6 @@ spec:
       - name: saved-objects
         configMap:
           name: kibana-saved-objects
+      - name: kibana-config
+        configMap:
+          name: kibana-configmap

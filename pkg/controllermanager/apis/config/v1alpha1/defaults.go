@@ -16,16 +16,16 @@ package v1alpha1
 
 import (
 	"io/ioutil"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"os"
 	"path/filepath"
 	"time"
 
-	apimachineryconfigv1alpha1 "k8s.io/apimachinery/pkg/apis/config/v1alpha1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	apiserverconfigv1alpha1 "k8s.io/apiserver/pkg/apis/config/v1alpha1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	componentbaseconfigv1alpha1 "k8s.io/component-base/config/v1alpha1"
 )
 
 var (
@@ -120,9 +120,32 @@ func SetDefaults_ControllerManagerConfiguration(obj *ControllerManagerConfigurat
 		obj.Controllers.Shoot.RetrySyncPeriod = &durationVar
 	}
 
-	if obj.Controllers.BackupInfrastructure.DeletionGracePeriodDays == nil || *obj.Controllers.BackupInfrastructure.DeletionGracePeriodDays < 0 {
-		var defaultBackupInfrastructureDeletionGracePeriodDays = DefaultBackupInfrastructureDeletionGracePeriodDays
-		obj.Controllers.BackupInfrastructure.DeletionGracePeriodDays = &defaultBackupInfrastructureDeletionGracePeriodDays
+	if obj.Controllers.BackupInfrastructure.DeletionGracePeriodHours == nil || *obj.Controllers.BackupInfrastructure.DeletionGracePeriodHours < 0 {
+		var defaultBackupInfrastructureDeletionGracePeriodHours = DefaultBackupInfrastructureDeletionGracePeriodHours
+		obj.Controllers.BackupInfrastructure.DeletionGracePeriodHours = &defaultBackupInfrastructureDeletionGracePeriodHours
+	}
+	if obj.Controllers.BackupBucket == nil {
+		obj.Controllers.BackupBucket = &BackupBucketControllerConfiguration{
+			ConcurrentSyncs: 5,
+		}
+	}
+	if obj.Controllers.BackupEntry == nil {
+		obj.Controllers.BackupEntry = &BackupEntryControllerConfiguration{
+			ConcurrentSyncs: 5,
+		}
+	}
+	if obj.Controllers.BackupEntry.DeletionGracePeriodHours == nil || *obj.Controllers.BackupEntry.DeletionGracePeriodHours < 0 {
+		var defaultBackupEntryDeletionGracePeriodHours = DefaultBackupInfrastructureDeletionGracePeriodHours
+		obj.Controllers.BackupEntry.DeletionGracePeriodHours = &defaultBackupEntryDeletionGracePeriodHours
+	}
+
+	if obj.Controllers.Plant == nil {
+		obj.Controllers.Plant = &PlantConfiguration{
+			ConcurrentSyncs: 5,
+			SyncPeriod: metav1.Duration{
+				Duration: 30 * time.Second,
+			},
+		}
 	}
 
 	if obj.ShootBackup == nil {
@@ -147,8 +170,8 @@ func SetDefaults_ControllerManagerConfiguration(obj *ControllerManagerConfigurat
 }
 
 // SetDefaults_ClientConnection sets defaults for the client connection.
-func SetDefaults_ClientConnection(obj *apimachineryconfigv1alpha1.ClientConnectionConfiguration) {
-	//apimachineryconfigv1alpha1.RecommendedDefaultClientConnectionConfiguration(obj)
+func SetDefaults_ClientConnection(obj *componentbaseconfigv1alpha1.ClientConnectionConfiguration) {
+	//componentbaseconfigv1alpha1.RecommendedDefaultClientConnectionConfiguration(obj)
 	// https://github.com/kubernetes/client-go/issues/76#issuecomment-396170694
 	if len(obj.AcceptContentTypes) == 0 {
 		obj.AcceptContentTypes = "application/json"
@@ -165,8 +188,8 @@ func SetDefaults_ClientConnection(obj *apimachineryconfigv1alpha1.ClientConnecti
 }
 
 // SetDefaults_GardenerClientConnection sets defaults for the client connection.
-func SetDefaults_GardenerClientConnection(obj *apimachineryconfigv1alpha1.ClientConnectionConfiguration) {
-	//apimachineryconfigv1alpha1.RecommendedDefaultClientConnectionConfiguration(obj)
+func SetDefaults_GardenerClientConnection(obj *componentbaseconfigv1alpha1.ClientConnectionConfiguration) {
+	//componentbaseconfigv1alpha1.RecommendedDefaultClientConnectionConfiguration(obj)
 	// Gardener does not yet support protobuf, however, the recommend default client connection config uses it.
 	if len(obj.AcceptContentTypes) == 0 {
 		obj.AcceptContentTypes = "application/json"
@@ -184,7 +207,7 @@ func SetDefaults_GardenerClientConnection(obj *apimachineryconfigv1alpha1.Client
 
 // SetDefaults_LeaderElectionConfiguration sets defaults for the leader election of the Gardener controller manager.
 func SetDefaults_LeaderElectionConfiguration(obj *LeaderElectionConfiguration) {
-	apiserverconfigv1alpha1.RecommendedDefaultLeaderElectionConfiguration(&obj.LeaderElectionConfiguration)
+	componentbaseconfigv1alpha1.RecommendedDefaultLeaderElectionConfiguration(&obj.LeaderElectionConfiguration)
 
 	obj.ResourceLock = resourcelock.ConfigMapsResourceLock
 

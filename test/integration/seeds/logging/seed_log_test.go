@@ -57,6 +57,7 @@ const (
 	FinalizationTimeout             = 30 * time.Minute
 	KibanaAvailableTimeout          = 10 * time.Second
 	GetLogsFromElasticsearchTimeout = 5 * time.Minute
+	DumpStateTimeout                = 5 * time.Minute
 
 	FluentBit = "fluent-bit"
 	Fluentd   = "fluentd-es"
@@ -100,9 +101,11 @@ var _ = Describe("Seed logging testing", func() {
 		validateFlags()
 
 		seedLogTestLogger = logger.AddWriter(logger.NewLogger(*logLevel), GinkgoWriter)
-		k8sGardenClient, err := kubernetes.NewClientFromFile("", *kubeconfig, client.Options{
-			Scheme: kubernetes.GardenScheme,
-		})
+		k8sGardenClient, err := kubernetes.NewClientFromFile("", *kubeconfig, kubernetes.WithClientOptions(
+			client.Options{
+				Scheme: kubernetes.GardenScheme,
+			}),
+		)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Checks whether required logging resources are present.
@@ -133,7 +136,7 @@ var _ = Describe("Seed logging testing", func() {
 		if StringSet(*shootTestYamlPath) {
 			*cleanup = true
 			// parse shoot yaml into shoot object and generate random test names for shoots
-			_, shootObject, err := CreateShootTestArtifacts(*shootTestYamlPath, *testShootsPrefix)
+			_, shootObject, err := CreateShootTestArtifacts(*shootTestYamlPath, *testShootsPrefix, true)
 			Expect(err).NotTo(HaveOccurred())
 
 			seed := &v1beta1.Seed{}
@@ -141,7 +144,7 @@ var _ = Describe("Seed logging testing", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			seedSecretRef := seed.Spec.SecretRef
-			seedClient, err := kubernetes.NewClientFromSecret(k8sGardenClient, seedSecretRef.Namespace, seedSecretRef.Name, client.Options{})
+			seedClient, err := kubernetes.NewClientFromSecret(k8sGardenClient, seedSecretRef.Namespace, seedSecretRef.Name)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking for required logging resources")
@@ -198,6 +201,10 @@ var _ = Describe("Seed logging testing", func() {
 		}
 	}, FinalizationTimeout)
 
+	CAfterEach(func(ctx context.Context) {
+		gardenTestOperation.AfterEach(ctx)
+	}, DumpStateTimeout)
+
 	CIt("Kibana should be available", func(ctx context.Context) {
 		err := gardenTestOperation.KibanaDashboardAvailable(ctx)
 		Expect(err).NotTo(HaveOccurred())
@@ -211,8 +218,7 @@ var _ = Describe("Seed logging testing", func() {
 		seedLogTestLogger.Debugf("expected logs count is %d", expectedLogsCount)
 
 		By("Deploy the logger application")
-		var loggingAppTpl *template.Template
-		loggingAppTpl = template.Must(template.ParseFiles(filepath.Join(TemplateDir, LoggingAppTemplateName)))
+		loggingAppTpl := template.Must(template.ParseFiles(filepath.Join(TemplateDir, LoggingAppTemplateName)))
 
 		loggerParams := struct {
 			HelmDeployNamespace string

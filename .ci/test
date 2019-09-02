@@ -5,31 +5,39 @@ set -e
 # For the test step concourse will set the following environment variables:
 # SOURCE_PATH - path to component repository root directory.
 
+# not all platforms support readlink -f
+# SOURCE_PATH must be set, and treat it as absolute path
+rlink=""
+set +e
+readlink -f /tmp >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+  # do not support readlink -f, so need alternative
+  rlink="readlink -f"
+fi
+set -e
+
+
 if [[ -z "${SOURCE_PATH}" ]]; then
-  export SOURCE_PATH="$(readlink -f "$(dirname ${0})/..")"
-else
-  export SOURCE_PATH="$(readlink -f "${SOURCE_PATH}")"
-fi
-
-# The `go <cmd>` commands requires to see the target repository to be part of a
-# Go workspace. Thus, if we are not yet in a Go workspace, let's create one
-# temporarily by using symbolic links.
-if [[ "${SOURCE_PATH}" != *"src/github.com/gardener/gardener" ]]; then
-  SOURCE_SYMLINK_PATH="${SOURCE_PATH}/tmp/src/github.com/gardener/gardener"
-  if [[ -d "${SOURCE_PATH}/tmp" ]]; then
-    rm -rf "${SOURCE_PATH}/tmp"
+  if [ -z "$rlink" ]; then
+    echo "ERROR: system does not support 'readlink -f' and SOURCE_PATH not set, exiting." >&2
+    exit 1
   fi
-  mkdir -p "${SOURCE_PATH}/tmp/src/github.com/gardener"
-  ln -s "${SOURCE_PATH}" "${SOURCE_SYMLINK_PATH}"
-  cd "${SOURCE_SYMLINK_PATH}"
-
-  export GOPATH="${SOURCE_PATH}/tmp"
-  export GOBIN="${SOURCE_PATH}/tmp/bin"
-  export PATH="${GOBIN}:${PATH}"
+  export SOURCE_PATH="$($rlink "$(dirname ${0})/..")"
+else
+  if [ -z "$rlink" ]; then
+    echo "warning: system does not support 'readlink -f', treating SOURCE_PATH as absolute path with symlinks resolved." >&2
+  else
+    export SOURCE_PATH="$($rlink ${SOURCE_PATH})"
+  fi
 fi
 
-# Install Ginkgo (test framework) to be able to execute the tests.
-go get -u github.com/onsi/ginkgo/ginkgo
+cd "${SOURCE_PATH}"
+
+# Build the Ginkgo (test framework) binary to be able to execute the tests.
+GO111MODULE=on go install -mod=vendor ./vendor/github.com/onsi/ginkgo/ginkgo
+
+# Install Prometheus mock test tool (promtool)
+GO111MODULE=off go get -u github.com/prometheus/prometheus/cmd/promtool
 
 ###############################################################################
 
@@ -38,4 +46,16 @@ if [[ ! -z "$COVERAGE" ]]; then
   COVER_FLAG="-cover"
 fi
 
-ginkgo ${COVER_FLAG} -r cmd pkg plugin
+GO111MODULE=on ginkgo ${COVER_FLAG} -r -mod=vendor cmd pkg plugin
+
+###############################################################################
+
+echo "Executing Prometheus alert tests"
+pushd $SOURCE_PATH/charts/seed-monitoring/charts/core/charts/prometheus > /dev/null
+  promtool test rules rules-tests/*test.yaml
+popd > /dev/null
+
+echo "Executing aggregate Prometheus alert tests"
+pushd $SOURCE_PATH/charts/seed-bootstrap/aggregate-prometheus-rules-tests > /dev/null
+  promtool test rules *test.yaml
+popd > /dev/null

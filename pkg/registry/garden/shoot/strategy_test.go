@@ -15,6 +15,7 @@
 package shoot_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gardener/gardener/pkg/apis/garden"
@@ -45,20 +46,16 @@ var _ = Describe("ToSelectableFields", func() {
 
 var _ = Describe("GetAttrs", func() {
 	It("should return error when object is not Shoot", func() {
-		_, _, _, err := strategy.GetAttrs(&garden.Seed{})
+		_, _, err := strategy.GetAttrs(&garden.Seed{})
 		Expect(err).To(HaveOccurred())
 	})
 
 	It("should return correct result", func() {
-		ls, fs, uninitialized, err := strategy.GetAttrs(newShoot("foo"))
+		ls, fs, err := strategy.GetAttrs(newShoot("foo"))
 
 		Expect(ls).To(HaveLen(1))
 		Expect(ls.Get("foo")).To(Equal("bar"))
-
 		Expect(fs.Get(garden.ShootSeedName)).To(Equal("foo"))
-
-		Expect(uninitialized).To(BeFalse())
-
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
@@ -85,6 +82,48 @@ var _ = Describe("MatchShoot", func() {
 		Expect(result.Field).To(Equal(fs))
 		Expect(result.IndexFields).To(ConsistOf(garden.ShootSeedName))
 
+	})
+})
+
+var _ = Describe("Strategy", func() {
+
+	Context("PrepareForUpdate", func() {
+		Context("invalid GCP network CIRDs", func() {
+			It("should remove more than one GCP networks", func() {
+				shoot := newShoot("foo")
+
+				shoot.Spec.Cloud.GCP = &garden.GCPCloud{
+					Networks: garden.GCPNetworks{
+						Workers: []garden.CIDR{"1.1.1.1/32", "1.1.1.2/32"},
+					},
+				}
+				oldShoot := newShoot("foo")
+				oldShoot.Spec.Cloud.GCP = shoot.Spec.Cloud.GCP.DeepCopy()
+
+				strategy.Strategy.PrepareForUpdate(context.TODO(), shoot, oldShoot)
+
+				Expect(shoot.Spec.Cloud.GCP.Networks.Workers).To(ConsistOf(garden.CIDR("1.1.1.1/32")))
+				Expect(oldShoot.Spec.Cloud.GCP.Networks.Workers).To(ConsistOf(garden.CIDR("1.1.1.1/32")))
+			})
+		})
+		Context("invalid Openstack network CIRDs", func() {
+			It("should remove more than one OpenStack networks", func() {
+				shoot := newShoot("foo")
+
+				shoot.Spec.Cloud.OpenStack = &garden.OpenStackCloud{
+					Networks: garden.OpenStackNetworks{
+						Workers: []garden.CIDR{"1.1.1.1/32", "1.1.1.2/32"},
+					},
+				}
+				oldShoot := newShoot("foo")
+				oldShoot.Spec.Cloud.OpenStack = shoot.Spec.Cloud.OpenStack.DeepCopy()
+
+				strategy.Strategy.PrepareForUpdate(context.TODO(), shoot, oldShoot)
+
+				Expect(shoot.Spec.Cloud.OpenStack.Networks.Workers).To(ConsistOf(garden.CIDR("1.1.1.1/32")))
+				Expect(oldShoot.Spec.Cloud.OpenStack.Networks.Workers).To(ConsistOf(garden.CIDR("1.1.1.1/32")))
+			})
+		})
 	})
 })
 

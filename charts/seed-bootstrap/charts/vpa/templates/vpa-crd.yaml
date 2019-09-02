@@ -3,10 +3,9 @@ kind: CustomResourceDefinition
 metadata:
   name: verticalpodautoscalers.autoscaling.k8s.io
   labels:
-{{ toYaml .Values.vpa.labels | indent 4 }}
+{{ toYaml .Values.labels | indent 4 }}
 spec:
   group: autoscaling.k8s.io
-  version: v1beta1
   scope: Namespaced
   names:
     plural: verticalpodautoscalers
@@ -45,10 +44,9 @@ kind: CustomResourceDefinition
 metadata:
   name: verticalpodautoscalercheckpoints.autoscaling.k8s.io
   labels:
-{{ toYaml .Values.vpa.labels | indent 4 }}
+{{ toYaml .Values.labels | indent 4 }}
 spec:
   group: autoscaling.k8s.io
-  version: v1beta1
   scope: Namespaced
   names:
     plural: verticalpodautoscalercheckpoints

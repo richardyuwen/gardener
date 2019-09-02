@@ -18,7 +18,8 @@ import (
 	"context"
 
 	"github.com/gardener/gardener/pkg/apis/garden"
-	"github.com/gardener/gardener/pkg/apis/garden/helper"
+	gardenhelper "github.com/gardener/gardener/pkg/apis/garden/helper"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metatable "k8s.io/apimachinery/pkg/api/meta/table"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,22 +99,22 @@ func (c *convertor) ConvertToTable(ctx context.Context, obj runtime.Object, tabl
 			cells = append(cells, "<pending>")
 			cells = append(cells, 0)
 		}
-		if cond := helper.GetCondition(shoot.Status.Conditions, garden.ShootAPIServerAvailable); cond != nil {
+		if cond := gardenhelper.GetCondition(shoot.Status.Conditions, garden.ShootAPIServerAvailable); cond != nil {
 			cells = append(cells, cond.Status)
 		} else {
 			cells = append(cells, "<unknown>")
 		}
-		if cond := helper.GetCondition(shoot.Status.Conditions, garden.ShootControlPlaneHealthy); cond != nil {
+		if cond := gardenhelper.GetCondition(shoot.Status.Conditions, garden.ShootControlPlaneHealthy); cond != nil {
 			cells = append(cells, cond.Status)
 		} else {
 			cells = append(cells, "<unknown>")
 		}
-		if cond := helper.GetCondition(shoot.Status.Conditions, garden.ShootEveryNodeReady); cond != nil {
+		if cond := gardenhelper.GetCondition(shoot.Status.Conditions, garden.ShootEveryNodeReady); cond != nil {
 			cells = append(cells, cond.Status)
 		} else {
 			cells = append(cells, "<unknown>")
 		}
-		if cond := helper.GetCondition(shoot.Status.Conditions, garden.ShootSystemComponentsHealthy); cond != nil {
+		if cond := gardenhelper.GetCondition(shoot.Status.Conditions, garden.ShootSystemComponentsHealthy); cond != nil {
 			cells = append(cells, cond.Status)
 		} else {
 			cells = append(cells, "<unknown>")

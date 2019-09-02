@@ -15,12 +15,16 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"time"
 
+	utilretry "github.com/gardener/gardener/pkg/utils/retry"
+
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/chartrenderer"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
 	kutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -36,6 +40,7 @@ import (
 
 func (c *defaultControl) reconcile(project *gardenv1beta1.Project, projectLogger logrus.FieldLogger) error {
 	var (
+		ctx        = context.TODO()
 		generation = project.Generation
 		err        error
 	)
@@ -79,11 +84,15 @@ func (c *defaultControl) reconcile(project *gardenv1beta1.Project, projectLogger
 
 			// If we failed to update the namespace in the project specification we should try to delete
 			// our created namespace again to prevent an inconsistent state.
-			if err := utils.Retry(time.Second, time.Minute, func() (ok, severe bool, err error) {
-				if err := c.k8sGardenClient.DeleteNamespace(namespace.Name); err != nil && !apierrors.IsNotFound(err) {
-					return false, false, err
+			if err := utilretry.UntilTimeout(ctx, time.Second, time.Minute, func(context.Context) (done bool, err error) {
+				if err := c.k8sGardenClient.Client().Delete(context.TODO(), namespace, kubernetes.DefaultDeleteOptionFuncs...); err != nil {
+					if apierrors.IsNotFound(err) {
+						return utilretry.Ok()
+					}
+					return utilretry.SevereError(err)
 				}
-				return true, false, nil
+
+				return utilretry.MinorError(fmt.Errorf("namespace %q still exists", namespace.Name))
 			}); err != nil {
 				c.reportEvent(project, true, gardenv1beta1.ProjectEventNamespaceReconcileFailed, "Failed to delete created namespace for project %q: %v", namespace.Name, err)
 			}
@@ -98,16 +107,24 @@ func (c *defaultControl) reconcile(project *gardenv1beta1.Project, projectLogger
 		c.updateProjectStatus(project.ObjectMeta, setProjectPhase(gardenv1beta1.ProjectFailed))
 		return err
 	}
+	applier, err := kubernetes.NewApplierForConfig(c.k8sGardenClient.RESTConfig())
+	if err != nil {
+		c.reportEvent(project, true, gardenv1beta1.ProjectEventNamespaceReconcileFailed, err.Error())
+		c.updateProjectStatus(project.ObjectMeta, setProjectPhase(gardenv1beta1.ProjectFailed))
+		return err
+	}
+	chartApplier := kubernetes.NewChartApplier(chartRenderer, applier)
 
 	// Create RBAC rules to allow project owner and project members to read, update, and delete the project.
 	// We also create a RoleBinding in the namespace that binds all members to the garden.sapcloud.io:system:project-member
 	// role to ensure access for listing shoots, creating secrets, etc.
-	if err := common.ApplyChart(c.k8sGardenClient, chartRenderer, filepath.Join(common.ChartPath, "garden-project", "charts", "project-rbac"), "project-rbac", namespace.Name, map[string]interface{}{
+	if err := chartApplier.ApplyChart(context.TODO(), filepath.Join(common.ChartPath, "garden-project", "charts", "project-rbac"), namespace.Name, "project-rbac", map[string]interface{}{
 		"project": map[string]interface{}{
 			"name":    project.Name,
 			"uid":     project.UID,
 			"owner":   project.Spec.Owner,
 			"members": project.Spec.Members,
+			"viewers": project.Spec.Viewers,
 		},
 	}, nil); err != nil {
 		c.reportEvent(project, true, gardenv1beta1.ProjectEventNamespaceReconcileFailed, "Error while creating RBAC rules for namespace %q: %+v", namespace.Name, err)
@@ -138,14 +155,16 @@ func (c *defaultControl) reconcileNamespaceForProject(project *gardenv1beta1.Pro
 	)
 
 	if namespaceName == nil {
-		return c.k8sGardenClient.CreateNamespace(&corev1.Namespace{
+		obj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName:    fmt.Sprintf("%s%s-", common.ProjectPrefix, project.Name),
 				OwnerReferences: []metav1.OwnerReference{*ownerReference},
 				Labels:          projectLabels,
 				Annotations:     projectAnnotations,
 			},
-		}, false)
+		}
+		err := c.k8sGardenClient.Client().Create(context.TODO(), obj)
+		return obj, err
 	}
 
 	namespace, err := kutils.TryUpdateNamespace(c.k8sGardenClient.Kubernetes(), retry.DefaultBackoff, metav1.ObjectMeta{Name: *namespaceName}, func(ns *corev1.Namespace) (*corev1.Namespace, error) {
@@ -167,14 +186,16 @@ func (c *defaultControl) reconcileNamespaceForProject(project *gardenv1beta1.Pro
 			return nil, err
 		}
 
-		return c.k8sGardenClient.CreateNamespace(&corev1.Namespace{
+		obj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            *namespaceName,
 				OwnerReferences: []metav1.OwnerReference{*ownerReference},
 				Labels:          projectLabels,
 				Annotations:     projectAnnotations,
 			},
-		}, false)
+		}
+		err := c.k8sGardenClient.Client().Create(context.TODO(), obj)
+		return obj, err
 	}
 
 	return namespace, nil

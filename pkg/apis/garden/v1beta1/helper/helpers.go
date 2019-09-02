@@ -18,15 +18,16 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
-	"strconv"
-
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
+
+	"github.com/Masterminds/semver"
 	corev1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
@@ -62,13 +63,13 @@ func DetermineCloudProviderInProfile(spec gardenv1beta1.CloudProfileSpec) (garde
 		numClouds++
 		cloud = gardenv1beta1.CloudProviderAlicloud
 	}
-	if spec.Local != nil {
+	if spec.Packet != nil {
 		numClouds++
-		cloud = gardenv1beta1.CloudProviderLocal
+		cloud = gardenv1beta1.CloudProviderPacket
 	}
 
 	if numClouds != 1 {
-		return "", errors.New("cloud profile must only contain exactly one field of alicloud/aws/azure/gcp/openstack/local")
+		return "", errors.New("cloud profile must only contain exactly one field of alicloud/aws/azure/gcp/openstack/packet")
 	}
 	return cloud, nil
 }
@@ -78,9 +79,9 @@ func GetShootCloudProvider(shoot *gardenv1beta1.Shoot) (gardenv1beta1.CloudProvi
 	return DetermineCloudProviderInShoot(shoot.Spec.Cloud)
 }
 
-// IsShootHibernated checks if the given shoot is hibernated.
-func IsShootHibernated(shoot *gardenv1beta1.Shoot) bool {
-	return shoot.Spec.Hibernation != nil && shoot.Spec.Hibernation.Enabled
+// HibernationIsEnabled checks if the given shoot's desired state is hibernated.
+func HibernationIsEnabled(shoot *gardenv1beta1.Shoot) bool {
+	return shoot.Spec.Hibernation != nil && shoot.Spec.Hibernation.Enabled != nil && *shoot.Spec.Hibernation.Enabled
 }
 
 // ShootWantsClusterAutoscaler checks if the given Shoot needs a cluster autoscaler.
@@ -101,6 +102,19 @@ func ShootWantsClusterAutoscaler(shoot *gardenv1beta1.Shoot) (bool, error) {
 	return false, nil
 }
 
+// ShootWantsBasicAuthentication returns true if basic authentication is not configured or
+// if it is set explicitly to 'true'.
+func ShootWantsBasicAuthentication(shoot *gardenv1beta1.Shoot) bool {
+	kubeAPIServerConfig := shoot.Spec.Kubernetes.KubeAPIServer
+	if kubeAPIServerConfig == nil {
+		return true
+	}
+	if kubeAPIServerConfig.EnableBasicAuthentication == nil {
+		return true
+	}
+	return *kubeAPIServerConfig.EnableBasicAuthentication
+}
+
 // ShootWantsAlertmanager checks if the given Shoot needs an Alertmanger.
 func ShootWantsAlertmanager(shoot *gardenv1beta1.Shoot, secrets map[string]*corev1.Secret) bool {
 	if alertingSMTPSecret := common.GetSecretKeysWithPrefix(common.GardenRoleAlertingSMTP, secrets); len(alertingSMTPSecret) > 0 {
@@ -109,6 +123,15 @@ func ShootWantsAlertmanager(shoot *gardenv1beta1.Shoot, secrets map[string]*core
 		}
 	}
 	return false
+}
+
+// ShootIgnoreAlerts checks if the alerts for the annotated shoot cluster should be ignored.
+func ShootIgnoreAlerts(shoot *gardenv1beta1.Shoot) bool {
+	ignore := false
+	if value, ok := shoot.Annotations[common.GardenIgnoreAlerts]; ok {
+		ignore, _ = strconv.ParseBool(value)
+	}
+	return ignore
 }
 
 // GetShootCloudProviderWorkers retrieves the cloud-specific workers of the given Shoot.
@@ -139,44 +162,88 @@ func GetShootCloudProviderWorkers(cloudProvider gardenv1beta1.CloudProvider, sho
 		for _, worker := range cloud.OpenStack.Workers {
 			workers = append(workers, worker.Worker)
 		}
-	case gardenv1beta1.CloudProviderLocal:
-		workers = append(workers, gardenv1beta1.Worker{
-			Name:          "local",
-			AutoScalerMax: 1,
-			AutoScalerMin: 1,
-		})
+	case gardenv1beta1.CloudProviderPacket:
+		for _, worker := range cloud.Packet.Workers {
+			workers = append(workers, worker.Worker)
+		}
 	}
 
 	return workers
 }
 
-// GetMachineImageNameFromShoot returns the machine image name used in a shoot manifest, however, it requires the cloudprovider as input.
-func GetMachineImageNameFromShoot(cloudProvider gardenv1beta1.CloudProvider, shoot *gardenv1beta1.Shoot) gardenv1beta1.MachineImageName {
+// GetDefaultMachineImageFromShoot returns the machine image used in a shoot manifest, however, it requires the cloud provider as input.
+func GetDefaultMachineImageFromShoot(cloudProvider gardenv1beta1.CloudProvider, shoot *gardenv1beta1.Shoot) *gardenv1beta1.ShootMachineImage {
 	switch cloudProvider {
 	case gardenv1beta1.CloudProviderAWS:
-		return shoot.Spec.Cloud.AWS.MachineImage.Name
+		return shoot.Spec.Cloud.AWS.MachineImage
 	case gardenv1beta1.CloudProviderAzure:
-		return shoot.Spec.Cloud.Azure.MachineImage.Name
+		return shoot.Spec.Cloud.Azure.MachineImage
 	case gardenv1beta1.CloudProviderGCP:
-		return shoot.Spec.Cloud.GCP.MachineImage.Name
+		return shoot.Spec.Cloud.GCP.MachineImage
 	case gardenv1beta1.CloudProviderAlicloud:
-		return shoot.Spec.Cloud.Alicloud.MachineImage.Name
+		return shoot.Spec.Cloud.Alicloud.MachineImage
 	case gardenv1beta1.CloudProviderOpenStack:
-		return shoot.Spec.Cloud.OpenStack.MachineImage.Name
-	case gardenv1beta1.CloudProviderLocal:
-		return "coreos"
+		return shoot.Spec.Cloud.OpenStack.MachineImage
+	case gardenv1beta1.CloudProviderPacket:
+		return shoot.Spec.Cloud.Packet.MachineImage
 	}
-	return ""
+	return nil
 }
 
-// GetShootMachineImageName returns the machine image name used in a shoot manifest.
-func GetShootMachineImageName(shoot *gardenv1beta1.Shoot) (gardenv1beta1.MachineImageName, error) {
-	cloudProvider, err := DetermineCloudProviderInShoot(shoot.Spec.Cloud)
-	if err != nil {
-		return "", err
+// GetMachineImagesFromShootForCloudProvider returns the machine images used in a shoot manifest, however, it requires the cloudprovider as input.
+func GetMachineImagesFromShootForCloudProvider(cloudProvider gardenv1beta1.CloudProvider, shoot *gardenv1beta1.Shoot) []*gardenv1beta1.ShootMachineImage {
+	machineImages := []*gardenv1beta1.ShootMachineImage{}
+
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		for _, worker := range shoot.Spec.Cloud.AWS.Workers {
+			if worker.MachineImage != nil {
+				machineImages = append(machineImages, worker.MachineImage)
+			}
+		}
+	case gardenv1beta1.CloudProviderAzure:
+		for _, worker := range shoot.Spec.Cloud.Azure.Workers {
+			if worker.MachineImage != nil {
+				machineImages = append(machineImages, worker.MachineImage)
+			}
+		}
+	case gardenv1beta1.CloudProviderGCP:
+		for _, worker := range shoot.Spec.Cloud.GCP.Workers {
+			if worker.MachineImage != nil {
+				machineImages = append(machineImages, worker.MachineImage)
+			}
+		}
+	case gardenv1beta1.CloudProviderAlicloud:
+		for _, worker := range shoot.Spec.Cloud.Alicloud.Workers {
+			if worker.MachineImage != nil {
+				machineImages = append(machineImages, worker.MachineImage)
+			}
+		}
+	case gardenv1beta1.CloudProviderOpenStack:
+		for _, worker := range shoot.Spec.Cloud.OpenStack.Workers {
+			if worker.MachineImage != nil {
+				machineImages = append(machineImages, worker.MachineImage)
+			}
+		}
+	case gardenv1beta1.CloudProviderPacket:
+		for _, worker := range shoot.Spec.Cloud.Packet.Workers {
+			if worker.MachineImage != nil {
+				machineImages = append(machineImages, worker.MachineImage)
+			}
+		}
 	}
 
-	return GetMachineImageNameFromShoot(cloudProvider, shoot), nil
+	return machineImages
+}
+
+// GetMachineImagesFromShoot returns the machine image used in a shoot manifest.
+func GetMachineImagesFromShoot(shoot *gardenv1beta1.Shoot) ([]*gardenv1beta1.ShootMachineImage, error) {
+	cloudProvider, err := DetermineCloudProviderInShoot(shoot.Spec.Cloud)
+	if err != nil {
+		return nil, err
+	}
+
+	return GetMachineImagesFromShootForCloudProvider(cloudProvider, shoot), nil
 }
 
 // GetMachineTypesFromCloudProfile retrieves list of machine types from cloud profile
@@ -192,17 +259,69 @@ func GetMachineTypesFromCloudProfile(cloudProvider gardenv1beta1.CloudProvider, 
 		return profile.Spec.Azure.Constraints.MachineTypes
 	case gardenv1beta1.CloudProviderGCP:
 		return profile.Spec.GCP.Constraints.MachineTypes
+	case gardenv1beta1.CloudProviderPacket:
+		return profile.Spec.Packet.Constraints.MachineTypes
 	case gardenv1beta1.CloudProviderOpenStack:
 		for _, openStackMachineType := range profile.Spec.OpenStack.Constraints.MachineTypes {
 			machineTypes = append(machineTypes, openStackMachineType.MachineType)
 		}
-	case gardenv1beta1.CloudProviderLocal:
-		machineTypes = append(machineTypes, gardenv1beta1.MachineType{
-			Name: "local",
-		})
 	}
 
 	return machineTypes
+}
+
+// GetMachineImagesFromCloudProfile returns a list of machine images from the cloud profile
+func GetMachineImagesFromCloudProfile(profile *gardenv1beta1.CloudProfile) ([]gardenv1beta1.MachineImage, error) {
+	cloudProvider, err := DetermineCloudProviderInProfile(profile.Spec)
+	if err != nil {
+		return nil, err
+	}
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		return profile.Spec.AWS.Constraints.MachineImages, nil
+	case gardenv1beta1.CloudProviderAzure:
+		return profile.Spec.Azure.Constraints.MachineImages, nil
+	case gardenv1beta1.CloudProviderGCP:
+		return profile.Spec.GCP.Constraints.MachineImages, nil
+	case gardenv1beta1.CloudProviderPacket:
+		return profile.Spec.Packet.Constraints.MachineImages, nil
+	case gardenv1beta1.CloudProviderOpenStack:
+		return profile.Spec.OpenStack.Constraints.MachineImages, nil
+	}
+	return nil, fmt.Errorf("no known cloud provider found in cloud profile")
+}
+
+// SetMachineImages sets imageVersions to the matching imageName in the machineImages.
+func SetMachineImages(profile *gardenv1beta1.CloudProfile, images []gardenv1beta1.MachineImage) error {
+	cloudProvider, err := DetermineCloudProviderInProfile(profile.Spec)
+	if err != nil {
+		return err
+	}
+
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		profile.Spec.AWS.Constraints.MachineImages = images
+	case gardenv1beta1.CloudProviderGCP:
+		profile.Spec.GCP.Constraints.MachineImages = images
+	case gardenv1beta1.CloudProviderOpenStack:
+		profile.Spec.OpenStack.Constraints.MachineImages = images
+	case gardenv1beta1.CloudProviderAlicloud:
+		profile.Spec.Alicloud.Constraints.MachineImages = images
+	case gardenv1beta1.CloudProviderPacket:
+		profile.Spec.Packet.Constraints.MachineImages = images
+	}
+	return nil
+}
+
+// SetMachineImageVersionsToMachineImage sets imageVersions to the matching imageName in the machineImages.
+func SetMachineImageVersionsToMachineImage(machineImages []gardenv1beta1.MachineImage, imageName string, imageVersions []gardenv1beta1.MachineImageVersion) ([]gardenv1beta1.MachineImage, error) {
+	for index, image := range machineImages {
+		if strings.ToLower(image.Name) == strings.ToLower(imageName) {
+			machineImages[index].Versions = imageVersions
+			return machineImages, nil
+		}
+	}
+	return nil, fmt.Errorf("machine image with name '%s' could not be found", imageName)
 }
 
 // DetermineCloudProviderInShoot takes a Shoot cloud object and returns the cloud provider this profile is used for.
@@ -233,237 +352,262 @@ func DetermineCloudProviderInShoot(cloudObj gardenv1beta1.Cloud) (gardenv1beta1.
 		numClouds++
 		cloud = gardenv1beta1.CloudProviderAlicloud
 	}
-	if cloudObj.Local != nil {
+	if cloudObj.Packet != nil {
 		numClouds++
-		cloud = gardenv1beta1.CloudProviderLocal
+		cloud = gardenv1beta1.CloudProviderPacket
 	}
 
 	if numClouds != 1 {
-		return "", errors.New("cloud object must only contain exactly one field of aws/azure/gcp/openstack/local")
+		return "", errors.New("cloud object must only contain exactly one field of aws/azure/gcp/openstack/packet")
 	}
 	return cloud, nil
 }
 
-// InitCondition initializes a new Condition with an Unknown status.
-func InitCondition(conditionType gardenv1beta1.ConditionType, reason, message string) *gardenv1beta1.Condition {
-	if reason == "" {
-		reason = "ConditionInitialized"
-	}
-	if message == "" {
-		message = "The condition has been initialized but its semantic check has not been performed yet."
-	}
-	return &gardenv1beta1.Condition{
-		Type:               conditionType,
-		Status:             gardenv1beta1.ConditionUnknown,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: Now(),
-	}
-}
-
-// UpdatedCondition updates the properties of one specific condition.
-func UpdatedCondition(condition *gardenv1beta1.Condition, status gardenv1beta1.ConditionStatus, reason, message string) *gardenv1beta1.Condition {
-	newCondition := &gardenv1beta1.Condition{
-		Type:               condition.Type,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: condition.LastTransitionTime,
-		LastUpdateTime:     Now(),
+// DetermineMachineImageForName finds the cloud specific machine images in the <cloudProfile> for the given <name> and
+// region. In case it does not find the machine image with the <name>, it returns false. Otherwise, true and the
+// cloud-specific machine image will be returned.
+func DetermineMachineImageForName(cloudProfile gardenv1beta1.CloudProfile, name string) (bool, gardenv1beta1.MachineImage, error) {
+	machineImages, err := GetMachineImagesFromCloudProfile(&cloudProfile)
+	if err != nil {
+		return false, gardenv1beta1.MachineImage{}, err
 	}
 
-	if condition.Status != status {
-		newCondition.LastTransitionTime = Now()
-	}
-	return newCondition
-}
-
-func UpdatedConditionUnknownError(condition *gardenv1beta1.Condition, err error) *gardenv1beta1.Condition {
-	return UpdatedConditionUnknownErrorMessage(condition, err.Error())
-}
-
-func UpdatedConditionUnknownErrorMessage(condition *gardenv1beta1.Condition, message string) *gardenv1beta1.Condition {
-	return UpdatedCondition(condition, gardenv1beta1.ConditionUnknown, gardenv1beta1.ConditionCheckError, message)
-}
-
-// NewConditions initializes the provided conditions based on an existing list. If a condition type does not exist
-// in the list yet, it will be set to default values.
-func NewConditions(conditions []gardenv1beta1.Condition, conditionTypes ...gardenv1beta1.ConditionType) []*gardenv1beta1.Condition {
-	newConditions := []*gardenv1beta1.Condition{}
-
-	// We retrieve the current conditions in order to update them appropriately.
-	for _, conditionType := range conditionTypes {
-		if c := GetCondition(conditions, conditionType); c != nil {
-			newConditions = append(newConditions, c)
-			continue
-		}
-		newConditions = append(newConditions, InitCondition(conditionType, "", ""))
-	}
-
-	return newConditions
-}
-
-// GetCondition returns the condition with the given <conditionType> out of the list of <conditions>.
-// In case the required type could not be found, it returns nil.
-func GetCondition(conditions []gardenv1beta1.Condition, conditionType gardenv1beta1.ConditionType) *gardenv1beta1.Condition {
-	for _, condition := range conditions {
-		if condition.Type == conditionType {
-			c := condition
-			return &c
+	for _, image := range machineImages {
+		if strings.ToLower(image.Name) == strings.ToLower(name) {
+			return true, image, nil
 		}
 	}
+
+	return false, gardenv1beta1.MachineImage{}, nil
+}
+
+// UpdateDefaultMachineImage updates the default machine image.
+func UpdateDefaultMachineImage(cloudProvider gardenv1beta1.CloudProvider, machineImage *gardenv1beta1.ShootMachineImage) func(*gardenv1beta1.Cloud) {
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		return func(s *gardenv1beta1.Cloud) { s.AWS.MachineImage = machineImage }
+	case gardenv1beta1.CloudProviderAzure:
+		return func(s *gardenv1beta1.Cloud) { s.Azure.MachineImage = machineImage }
+	case gardenv1beta1.CloudProviderGCP:
+		return func(s *gardenv1beta1.Cloud) { s.GCP.MachineImage = machineImage }
+	case gardenv1beta1.CloudProviderOpenStack:
+		return func(s *gardenv1beta1.Cloud) { s.OpenStack.MachineImage = machineImage }
+	case gardenv1beta1.CloudProviderPacket:
+		return func(s *gardenv1beta1.Cloud) { s.Packet.MachineImage = machineImage }
+	case gardenv1beta1.CloudProviderAlicloud:
+		return func(s *gardenv1beta1.Cloud) { s.Alicloud.MachineImage = machineImage }
+	}
+
 	return nil
 }
 
-// ConditionsNeedUpdate returns true if the <existingConditions> must be updated based on <newConditions>.
-func ConditionsNeedUpdate(existingConditions, newConditions []gardenv1beta1.Condition) bool {
-	return existingConditions == nil || !apiequality.Semantic.DeepEqual(newConditions, existingConditions)
-}
-
-// DetermineMachineImage finds the cloud specific machine image in the <cloudProfile> for the given <name> and
-// region. In case it does not find a machine image with the <name>, it returns false. Otherwise, true and the
-// cloud-specific machine image object will be returned.
-func DetermineMachineImage(cloudProfile gardenv1beta1.CloudProfile, name gardenv1beta1.MachineImageName, region string) (bool, interface{}, error) {
-	cloudProvider, err := DetermineCloudProviderInProfile(cloudProfile.Spec)
-	if err != nil {
-		return false, nil, err
-	}
-
-	currentMachineImageName := machineImageToString(name)
-
+// UpdateMachineImages updates the machine images for the given cloud provider.
+func UpdateMachineImages(cloudProvider gardenv1beta1.CloudProvider, machineImages []*gardenv1beta1.ShootMachineImage) func(*gardenv1beta1.Cloud) {
 	switch cloudProvider {
 	case gardenv1beta1.CloudProviderAWS:
-		for _, image := range cloudProfile.Spec.AWS.Constraints.MachineImages {
-			if machineImageToString(image.Name) == currentMachineImageName {
-				for _, regionMapping := range image.Regions {
-					if regionMapping.Name == region {
-						return true, &gardenv1beta1.AWSMachineImage{
-							Name: image.Name,
-							AMI:  regionMapping.AMI,
-						}, nil
+		return func(s *gardenv1beta1.Cloud) {
+			for _, machineImage := range machineImages {
+				for idx, worker := range s.AWS.Workers {
+					if worker.MachineImage != nil && machineImage.Name == worker.MachineImage.Name {
+						s.AWS.Workers[idx].MachineImage = machineImage
 					}
 				}
 			}
 		}
 	case gardenv1beta1.CloudProviderAzure:
-		for _, image := range cloudProfile.Spec.Azure.Constraints.MachineImages {
-			if machineImageToString(image.Name) == currentMachineImageName {
-				ptr := image
-				return true, &ptr, nil
+		return func(s *gardenv1beta1.Cloud) {
+			for _, machineImage := range machineImages {
+				for idx, worker := range s.Azure.Workers {
+					if worker.MachineImage != nil && machineImage.Name == worker.MachineImage.Name {
+						s.Azure.Workers[idx].MachineImage = machineImage
+					}
+				}
 			}
 		}
 	case gardenv1beta1.CloudProviderGCP:
-		for _, image := range cloudProfile.Spec.GCP.Constraints.MachineImages {
-			if machineImageToString(image.Name) == currentMachineImageName {
-				ptr := image
-				return true, &ptr, nil
+		return func(s *gardenv1beta1.Cloud) {
+			for _, machineImage := range machineImages {
+				for idx, worker := range s.GCP.Workers {
+					if worker.MachineImage != nil && machineImage.Name == worker.MachineImage.Name {
+						s.GCP.Workers[idx].MachineImage = machineImage
+					}
+				}
 			}
 		}
 	case gardenv1beta1.CloudProviderOpenStack:
-		for _, image := range cloudProfile.Spec.OpenStack.Constraints.MachineImages {
-			if machineImageToString(image.Name) == currentMachineImageName {
-				ptr := image
-				return true, &ptr, nil
+		return func(s *gardenv1beta1.Cloud) {
+			for _, machineImage := range machineImages {
+				for idx, worker := range s.OpenStack.Workers {
+					if worker.MachineImage != nil && machineImage.Name == worker.MachineImage.Name {
+						s.OpenStack.Workers[idx].MachineImage = machineImage
+					}
+				}
+			}
+		}
+	case gardenv1beta1.CloudProviderPacket:
+		return func(s *gardenv1beta1.Cloud) {
+			for _, machineImage := range machineImages {
+				for idx, worker := range s.Packet.Workers {
+					if worker.MachineImage != nil && machineImage.Name == worker.MachineImage.Name {
+						s.Packet.Workers[idx].MachineImage = machineImage
+					}
+				}
 			}
 		}
 	case gardenv1beta1.CloudProviderAlicloud:
-		for _, image := range cloudProfile.Spec.Alicloud.Constraints.MachineImages {
-			// The OR-case can be removed in a further version of Gardener. We need it to migrate from in-tree OS support
-			// to out-of-tree extensions.
-			if name := machineImageToString(image.Name); name == currentMachineImageName || (currentMachineImageName == "coreos" && name == "coreos-alicloud") {
-				ptr := image
-				return true, &ptr, nil
+		return func(s *gardenv1beta1.Cloud) {
+			for _, machineImage := range machineImages {
+				for idx, worker := range s.Alicloud.Workers {
+					if worker.MachineImage != nil && machineImage.Name == worker.MachineImage.Name {
+						s.Alicloud.Workers[idx].MachineImage = machineImage
+					}
+				}
 			}
 		}
-	default:
-		return false, nil, fmt.Errorf("unknown cloud provider %s", cloudProvider)
-	}
-
-	return false, nil, nil
-}
-
-// UpdateMachineImage updates the machine image for the given cloud provider.
-func UpdateMachineImage(cloudProvider gardenv1beta1.CloudProvider, machineImage interface{}) func(*gardenv1beta1.Cloud) {
-	switch cloudProvider {
-	case gardenv1beta1.CloudProviderAWS:
-		image := machineImage.(*gardenv1beta1.AWSMachineImage)
-		return func(s *gardenv1beta1.Cloud) { s.AWS.MachineImage = image }
-	case gardenv1beta1.CloudProviderAzure:
-		image := machineImage.(*gardenv1beta1.AzureMachineImage)
-		return func(s *gardenv1beta1.Cloud) { s.Azure.MachineImage = image }
-	case gardenv1beta1.CloudProviderGCP:
-		image := machineImage.(*gardenv1beta1.GCPMachineImage)
-		return func(s *gardenv1beta1.Cloud) { s.GCP.MachineImage = image }
-	case gardenv1beta1.CloudProviderOpenStack:
-		image := machineImage.(*gardenv1beta1.OpenStackMachineImage)
-		return func(s *gardenv1beta1.Cloud) { s.OpenStack.MachineImage = image }
-	case gardenv1beta1.CloudProviderAlicloud:
-		image := machineImage.(*gardenv1beta1.AlicloudMachineImage)
-		return func(s *gardenv1beta1.Cloud) { s.Alicloud.MachineImage = image }
 	}
 
 	return nil
 }
 
-func machineImageToString(name gardenv1beta1.MachineImageName) string {
-	return strings.ToLower(string(name))
-}
-
-// DetermineLatestKubernetesVersion finds the latest Kubernetes patch version in the <cloudProfile> compared
+// DetermineLatestKubernetesPatchVersion finds the latest Kubernetes patch version in the <cloudProfile> compared
 // to the given <currentVersion>. In case it does not find a newer patch version, it returns false. Otherwise,
 // true and the found version will be returned.
-func DetermineLatestKubernetesVersion(cloudProfile gardenv1beta1.CloudProfile, currentVersion string) (bool, string, error) {
-	cloudProvider, err := DetermineCloudProviderInProfile(cloudProfile.Spec)
+func DetermineLatestKubernetesPatchVersion(cloudProfile gardenv1beta1.CloudProfile, currentVersion string) (bool, string, error) {
+	ok, newerVersions, _, err := determineNextKubernetesVersions(cloudProfile, currentVersion, "~")
+	if err != nil || !ok {
+		return ok, "", err
+	}
+	sort.Strings(newerVersions)
+	return true, newerVersions[len(newerVersions)-1], nil
+}
+
+// DetermineNextKubernetesMinorVersion finds the next available Kubernetes minor version in the <cloudProfile> compared
+// to the given <currentVersion>. In case it does not find a newer minor version, it returns false. Otherwise,
+// true and the found version will be returned.
+func DetermineNextKubernetesMinorVersion(cloudProfile gardenv1beta1.CloudProfile, currentVersion string) (bool, string, error) {
+	ok, newerVersions, _, err := determineNextKubernetesVersions(cloudProfile, currentVersion, "^")
+	if err != nil || !ok {
+		return ok, "", err
+	}
+	sort.Strings(newerVersions)
+	return true, newerVersions[0], nil
+}
+
+// KubernetesVersionExistsInCloudProfile checks if the given Kubernetes version exists in the CloudProfile
+func KubernetesVersionExistsInCloudProfile(cloudProfile gardenv1beta1.CloudProfile, currentVersion string) (bool, gardenv1beta1.KubernetesVersion, error) {
+	versions, err := GetKubernetesVersionsFromCloudProfile(cloudProfile)
 	if err != nil {
-		return false, "", err
+		return false, gardenv1beta1.KubernetesVersion{}, err
+	}
+	for _, version := range versions {
+		ok, err := utils.CompareVersions(version.Version, "=", currentVersion)
+		if err != nil {
+			return false, gardenv1beta1.KubernetesVersion{}, err
+		}
+		if ok {
+			return true, version, nil
+		}
+	}
+	return false, gardenv1beta1.KubernetesVersion{}, nil
+}
+
+// DetermineKubernetesVersions finds newer Kubernetes versions in the <cloudProfile> compared
+// with the <operator> to the given <currentVersion>. The <operator> has to be a github.com/Masterminds/semver
+// range comparison symbol. In case it does not find a newer version, it returns false. Otherwise,
+// true and the found version will be returned.
+func determineNextKubernetesVersions(cloudProfile gardenv1beta1.CloudProfile, currentVersion, operator string) (bool, []string, []gardenv1beta1.KubernetesVersion, error) {
+	var (
+		newerVersions       = []gardenv1beta1.KubernetesVersion{}
+		newerVersionsString = []string{}
+	)
+
+	versions, err := GetKubernetesVersionsFromCloudProfile(cloudProfile)
+	if err != nil {
+		return false, []string{}, []gardenv1beta1.KubernetesVersion{}, err
+	}
+	for _, version := range versions {
+		ok, err := utils.CompareVersions(version.Version, operator, currentVersion)
+		if err != nil {
+			return false, []string{}, []gardenv1beta1.KubernetesVersion{}, err
+		}
+		if version.Version != currentVersion && ok {
+			newerVersions = append(newerVersions, version)
+			newerVersionsString = append(newerVersionsString, version.Version)
+		}
 	}
 
-	var (
-		versions      = []string{}
-		newerVersions = []string{}
-	)
+	if len(newerVersions) == 0 {
+		return false, []string{}, []gardenv1beta1.KubernetesVersion{}, nil
+	}
+
+	return true, newerVersionsString, newerVersions, nil
+}
+
+// GetKubernetesVersionsFromCloudProfile returns the Kubernetes Versions from a CloudProfile
+func GetKubernetesVersionsFromCloudProfile(cloudProfile gardenv1beta1.CloudProfile) ([]gardenv1beta1.KubernetesVersion, error) {
+	cloudProvider, err := DetermineCloudProviderInProfile(cloudProfile.Spec)
+	if err != nil {
+		return []gardenv1beta1.KubernetesVersion{}, err
+	}
+
+	versions := []gardenv1beta1.KubernetesVersion{}
 
 	switch cloudProvider {
 	case gardenv1beta1.CloudProviderAWS:
-		for _, version := range cloudProfile.Spec.AWS.Constraints.Kubernetes.Versions {
+		for _, version := range cloudProfile.Spec.AWS.Constraints.Kubernetes.OfferedVersions {
 			versions = append(versions, version)
 		}
 	case gardenv1beta1.CloudProviderAzure:
-		for _, version := range cloudProfile.Spec.Azure.Constraints.Kubernetes.Versions {
+		for _, version := range cloudProfile.Spec.Azure.Constraints.Kubernetes.OfferedVersions {
 			versions = append(versions, version)
 		}
 	case gardenv1beta1.CloudProviderGCP:
-		for _, version := range cloudProfile.Spec.GCP.Constraints.Kubernetes.Versions {
+		for _, version := range cloudProfile.Spec.GCP.Constraints.Kubernetes.OfferedVersions {
 			versions = append(versions, version)
 		}
 	case gardenv1beta1.CloudProviderOpenStack:
-		for _, version := range cloudProfile.Spec.OpenStack.Constraints.Kubernetes.Versions {
+		for _, version := range cloudProfile.Spec.OpenStack.Constraints.Kubernetes.OfferedVersions {
 			versions = append(versions, version)
 		}
 	case gardenv1beta1.CloudProviderAlicloud:
-		for _, version := range cloudProfile.Spec.Alicloud.Constraints.Kubernetes.Versions {
+		for _, version := range cloudProfile.Spec.Alicloud.Constraints.Kubernetes.OfferedVersions {
+			versions = append(versions, version)
+		}
+	case gardenv1beta1.CloudProviderPacket:
+		for _, version := range cloudProfile.Spec.Packet.Constraints.Kubernetes.OfferedVersions {
 			versions = append(versions, version)
 		}
 	default:
-		return false, "", fmt.Errorf("unknown cloud provider %s", cloudProvider)
+		return []gardenv1beta1.KubernetesVersion{}, fmt.Errorf("unknown cloud provider %s", cloudProvider)
+	}
+	return versions, nil
+}
+
+// SetKubernetesVersions sets the Kubernetes Versions to the CloudProfile
+func SetKubernetesVersions(profile *gardenv1beta1.CloudProfile, offeredVersions []gardenv1beta1.KubernetesVersion, versions []string) error {
+	cloudProvider, err := DetermineCloudProviderInProfile(profile.Spec)
+	if err != nil {
+		return err
 	}
 
-	for _, version := range versions {
-		ok, err := utils.CompareVersions(version, "~", currentVersion)
-		if err != nil {
-			return false, "", err
-		}
-		if version != currentVersion && ok {
-			newerVersions = append(newerVersions, version)
-		}
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		profile.Spec.AWS.Constraints.Kubernetes.OfferedVersions = offeredVersions
+		profile.Spec.AWS.Constraints.Kubernetes.Versions = versions
+	case gardenv1beta1.CloudProviderGCP:
+		profile.Spec.GCP.Constraints.Kubernetes.OfferedVersions = offeredVersions
+		profile.Spec.GCP.Constraints.Kubernetes.Versions = versions
+	case gardenv1beta1.CloudProviderOpenStack:
+		profile.Spec.OpenStack.Constraints.Kubernetes.OfferedVersions = offeredVersions
+		profile.Spec.OpenStack.Constraints.Kubernetes.Versions = versions
+	case gardenv1beta1.CloudProviderAlicloud:
+		profile.Spec.Alicloud.Constraints.Kubernetes.OfferedVersions = offeredVersions
+		profile.Spec.Alicloud.Constraints.Kubernetes.Versions = versions
+	case gardenv1beta1.CloudProviderPacket:
+		profile.Spec.Packet.Constraints.Kubernetes.OfferedVersions = offeredVersions
+		profile.Spec.Packet.Constraints.Kubernetes.Versions = versions
 	}
-
-	if len(newerVersions) > 0 {
-		sort.Strings(newerVersions)
-		return true, newerVersions[len(newerVersions)-1], nil
-	}
-
-	return false, "", nil
+	return nil
 }
 
 type ShootedSeed struct {
@@ -471,6 +615,9 @@ type ShootedSeed struct {
 	Visible           *bool
 	MinimumVolumeSize *string
 	APIServer         *ShootedSeedAPIServer
+	BlockCIDRs        []gardencorev1alpha1.CIDR
+	ShootDefaults     *gardenv1beta1.ShootNetworks
+	Backup            *gardenv1beta1.BackupProfile
 }
 
 type ShootedSeedAPIServer struct {
@@ -522,6 +669,24 @@ func parseShootedSeed(annotation string) (*ShootedSeed, error) {
 	}
 	shootedSeed.APIServer = apiServer
 
+	blockCIDRs, err := parseShootedSeedBlockCIDRs(settings)
+	if err != nil {
+		return nil, err
+	}
+	shootedSeed.BlockCIDRs = blockCIDRs
+
+	shootDefaults, err := parseShootedSeedShootDefaults(settings)
+	if err != nil {
+		return nil, err
+	}
+	shootedSeed.ShootDefaults = shootDefaults
+
+	backup, err := parseShootedSeedBackup(settings)
+	if err != nil {
+		return nil, err
+	}
+	shootedSeed.Backup = backup
+
 	if size, ok := settings["minimumVolumeSize"]; ok {
 		shootedSeed.MinimumVolumeSize = &size
 	}
@@ -540,6 +705,75 @@ func parseShootedSeed(annotation string) (*ShootedSeed, error) {
 	}
 
 	return &shootedSeed, nil
+}
+
+func parseShootedSeedBlockCIDRs(settings map[string]string) ([]gardencorev1alpha1.CIDR, error) {
+	cidrs, ok := settings["blockCIDRs"]
+	if !ok {
+		return nil, nil
+	}
+
+	var addresses []gardencorev1alpha1.CIDR
+	for _, addr := range strings.Split(cidrs, ";") {
+		addresses = append(addresses, gardencorev1alpha1.CIDR(addr))
+	}
+
+	return addresses, nil
+}
+
+func parseShootedSeedShootDefaults(settings map[string]string) (*gardenv1beta1.ShootNetworks, error) {
+	var (
+		podCIDR, ok1     = settings["shootDefaults.pods"]
+		serviceCIDR, ok2 = settings["shootDefaults.services"]
+	)
+
+	if !ok1 && !ok2 {
+		return nil, nil
+	}
+
+	shootNetworks := &gardenv1beta1.ShootNetworks{}
+
+	if ok1 {
+		cidr := gardencorev1alpha1.CIDR(podCIDR)
+		shootNetworks.Pods = &cidr
+	}
+
+	if ok2 {
+		cidr := gardencorev1alpha1.CIDR(serviceCIDR)
+		shootNetworks.Services = &cidr
+	}
+
+	return shootNetworks, nil
+}
+
+func parseShootedSeedBackup(settings map[string]string) (*gardenv1beta1.BackupProfile, error) {
+	var (
+		provider, ok1           = settings["backup.provider"]
+		region, ok2             = settings["backup.region"]
+		secretRefName, ok3      = settings["backup.secretRef.name"]
+		secretRefNamespace, ok4 = settings["backup.secretRef.namespace"]
+	)
+
+	if ok1 && provider == "none" {
+		return nil, nil
+	}
+
+	backup := &gardenv1beta1.BackupProfile{}
+
+	if ok1 {
+		backup.Provider = gardenv1beta1.CloudProvider(provider)
+	}
+	if ok2 {
+		backup.Region = &region
+	}
+	if ok3 {
+		backup.SecretRef.Name = secretRefName
+	}
+	if ok4 {
+		backup.SecretRef.Namespace = secretRefNamespace
+	}
+
+	return backup, nil
 }
 
 func parseShootedSeedAPIServer(settings map[string]string) (*ShootedSeedAPIServer, error) {
@@ -700,27 +934,110 @@ func ReadShootedSeed(shoot *gardenv1beta1.Shoot) (*ShootedSeed, error) {
 	return shootedSeed, nil
 }
 
-// Coder is an error that may produce an ErrorCode visible to the outside.
-type Coder interface {
-	error
-	Code() gardenv1beta1.ErrorCode
+// GetK8SNetworks returns the Kubernetes network CIDRs for the Shoot cluster.
+func GetK8SNetworks(shoot *gardenv1beta1.Shoot) (*gardencorev1alpha1.K8SNetworks, error) {
+	cloudProvider, err := DetermineCloudProviderInShoot(shoot.Spec.Cloud)
+	if err != nil {
+		return &gardencorev1alpha1.K8SNetworks{}, err
+	}
+
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		return &shoot.Spec.Cloud.AWS.Networks.K8SNetworks, nil
+	case gardenv1beta1.CloudProviderAzure:
+		return &shoot.Spec.Cloud.Azure.Networks.K8SNetworks, nil
+	case gardenv1beta1.CloudProviderGCP:
+		return &shoot.Spec.Cloud.GCP.Networks.K8SNetworks, nil
+	case gardenv1beta1.CloudProviderOpenStack:
+		return &shoot.Spec.Cloud.OpenStack.Networks.K8SNetworks, nil
+	case gardenv1beta1.CloudProviderAlicloud:
+		return &shoot.Spec.Cloud.Alicloud.Networks.K8SNetworks, nil
+	case gardenv1beta1.CloudProviderPacket:
+		return &shoot.Spec.Cloud.Packet.Networks.K8SNetworks, nil
+	}
+	return &gardencorev1alpha1.K8SNetworks{}, nil
 }
 
-// ExtractErrorCodes extracts all error codes from the given error by using utils.Errors
-func ExtractErrorCodes(err error) []gardenv1beta1.ErrorCode {
-	var codes []gardenv1beta1.ErrorCode
-	for _, err := range utils.Errors(err) {
-		if coder, ok := err.(Coder); ok {
-			codes = append(codes, coder.Code())
+// GetZones returns the CloudProvide, the Zones for the CloudProfile and an error
+// Returns an empty Zone slice for Azure
+func GetZones(shoot gardenv1beta1.Shoot, cloudProfile *gardenv1beta1.CloudProfile) (gardenv1beta1.CloudProvider, []gardenv1beta1.Zone, error) {
+	cloudProvider, err := DetermineCloudProviderInShoot(shoot.Spec.Cloud)
+	if err != nil {
+		return "", []gardenv1beta1.Zone{}, err
+	}
+
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		return gardenv1beta1.CloudProviderAWS, cloudProfile.Spec.AWS.Constraints.Zones, nil
+	case gardenv1beta1.CloudProviderAzure:
+		// Azure instead of Zones, has AzureDomainCounts
+		return gardenv1beta1.CloudProviderAzure, []gardenv1beta1.Zone{}, nil
+	case gardenv1beta1.CloudProviderGCP:
+		return gardenv1beta1.CloudProviderGCP, cloudProfile.Spec.GCP.Constraints.Zones, nil
+	case gardenv1beta1.CloudProviderOpenStack:
+		return gardenv1beta1.CloudProviderOpenStack, cloudProfile.Spec.OpenStack.Constraints.Zones, nil
+	case gardenv1beta1.CloudProviderAlicloud:
+		return gardenv1beta1.CloudProviderAlicloud, cloudProfile.Spec.Alicloud.Constraints.Zones, nil
+	case gardenv1beta1.CloudProviderPacket:
+		return gardenv1beta1.CloudProviderPacket, cloudProfile.Spec.Packet.Constraints.Zones, nil
+	}
+	return "", []gardenv1beta1.Zone{}, nil
+}
+
+// SetZoneForShoot sets the Zone for the shoot for the specific Cloud provider. Azure does not have Zones, so it is being ignored.
+func SetZoneForShoot(shoot *gardenv1beta1.Shoot, cloudProvider gardenv1beta1.CloudProvider, zones []string) {
+	switch cloudProvider {
+	case gardenv1beta1.CloudProviderAWS:
+		shoot.Spec.Cloud.AWS.Zones = zones
+	case gardenv1beta1.CloudProviderGCP:
+		shoot.Spec.Cloud.GCP.Zones = zones
+	case gardenv1beta1.CloudProviderOpenStack:
+		shoot.Spec.Cloud.OpenStack.Zones = zones
+	case gardenv1beta1.CloudProviderAlicloud:
+		shoot.Spec.Cloud.Alicloud.Zones = zones
+	case gardenv1beta1.CloudProviderPacket:
+		shoot.Spec.Cloud.Packet.Zones = zones
+	}
+}
+
+// DetermineLatestMachineImageVersion determines the latest MachineImageVersion from a MachineImage
+func DetermineLatestMachineImageVersion(image gardenv1beta1.MachineImage) (*semver.Version, gardenv1beta1.MachineImageVersion, error) {
+	var (
+		latestSemVerVersion       *semver.Version
+		latestMachineImageVersion gardenv1beta1.MachineImageVersion
+	)
+
+	for _, imageVersion := range image.Versions {
+		v, err := semver.NewVersion(imageVersion.Version)
+		if err != nil {
+			return nil, gardenv1beta1.MachineImageVersion{}, fmt.Errorf("error while parsing machine image version '%s' of machine image '%s': version not valid: %s", imageVersion.Version, image.Name, err.Error())
+		}
+		if latestSemVerVersion == nil || v.GreaterThan(latestSemVerVersion) {
+			latestSemVerVersion = v
+			latestMachineImageVersion = imageVersion
 		}
 	}
-	return codes
+	return latestSemVerVersion, latestMachineImageVersion, nil
 }
 
-func FormatLastErrDescription(err error) string {
-	errString := err.Error()
-	if len(errString) > 0 {
-		errString = strings.ToUpper(string(errString[0])) + errString[1:]
+// ShootMachineImageVersionExists checks if the shoot machine image (name, version) exists in the machine image constraint and returns true if yes and the index in the versions slice
+func ShootMachineImageVersionExists(constraint gardenv1beta1.MachineImage, image gardenv1beta1.ShootMachineImage) (bool, int) {
+	if constraint.Name != image.Name {
+		return false, 0
 	}
-	return errString
+	for index, v := range constraint.Versions {
+		if v.Version == image.Version {
+			return true, index
+		}
+	}
+	return false, 0
+}
+
+// GetShootMachineImageFromLatestMachineImageVersion determines the latest version in a machine image and returns that as a ShootMachineImage
+func GetShootMachineImageFromLatestMachineImageVersion(image gardenv1beta1.MachineImage) (*semver.Version, gardenv1beta1.ShootMachineImage, error) {
+	latestSemVerVersion, latestImage, err := DetermineLatestMachineImageVersion(image)
+	if err != nil {
+		return nil, gardenv1beta1.ShootMachineImage{}, err
+	}
+	return latestSemVerVersion, gardenv1beta1.ShootMachineImage{Name: image.Name, Version: latestImage.Version}, nil
 }

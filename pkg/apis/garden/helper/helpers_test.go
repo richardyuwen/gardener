@@ -19,7 +19,10 @@ import (
 	. "github.com/gardener/gardener/pkg/apis/garden/helper"
 
 	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
+	gomegatypes "github.com/onsi/gomega/types"
+	corev1 "k8s.io/api/core/v1"
 )
 
 var _ = Describe("helper", func() {
@@ -153,31 +156,145 @@ var _ = Describe("helper", func() {
 		})
 	})
 
-	Describe("#GetCondition", func() {
-		It("should return the found condition", func() {
-			var (
-				conditionType garden.ConditionType = "test-1"
-				condition                          = garden.Condition{
-					Type: conditionType,
-				}
-				conditions = []garden.Condition{condition}
-			)
+	Describe("#DetermineLatestMachineImage for images with different names", func() {
+		It("should return the Machine Images containing the latest image version", func() {
+			images := []garden.MachineImage{
+				{
+					Name: "coreos",
+					Versions: []garden.MachineImageVersion{
+						{
+							Version: "1.1",
+						},
+						{
+							Version: "0.0.2",
+						},
+						{
+							Version: "0.0.1",
+						},
+					},
+				},
 
-			cond := GetCondition(conditions, conditionType)
+				{
+					Name: "xy",
+					Versions: []garden.MachineImageVersion{
+						{
+							Version: "2.1",
+						},
+						{
+							Version: "1.0.0",
+						},
+						{
+							Version: "1.0.1",
+						},
+					},
+				},
+			}
 
-			Expect(cond).NotTo(BeNil())
-			Expect(*cond).To(Equal(condition))
+			latestImages, err := DetermineLatestMachineImageVersions(images)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(latestImages).ToNot(BeNil())
+			Expect(latestImages).ToNot(BeEmpty())
+			Expect(latestImages).To(HaveLen(2))
+
+			Expect(latestImages["xy"]).To(Equal(
+				garden.MachineImageVersion{
+					Version: "2.1",
+				},
+			))
+
+			Expect(latestImages["coreos"]).To(Equal(
+				garden.MachineImageVersion{
+					Version: "1.1",
+				},
+			))
 		})
 
-		It("should return nil because the required condition could not be found", func() {
-			var (
-				conditionType garden.ConditionType = "test-1"
-				conditions                         = []garden.Condition{}
-			)
+		It("should return an error for invalid semVerVersion", func() {
+			images := []garden.MachineImage{
+				{
+					Name: "coreos",
+					Versions: []garden.MachineImageVersion{
+						{
+							Version: "1.1",
+						},
+						{
+							Version: "0.0.2",
+						},
+						{
+							Version: "0.0.1",
+						},
+					},
+				},
+				{
+					Name: "xy",
+					Versions: []garden.MachineImageVersion{
+						{
+							Version: "0.xx.0",
+						},
+					},
+				},
+			}
 
-			cond := GetCondition(conditions, conditionType)
-
-			Expect(cond).To(BeNil())
+			_, err := DetermineLatestMachineImageVersions(images)
+			Expect(err).To(HaveOccurred())
 		})
 	})
+
+	Describe("#DetermineLatestKubernetesVersion", func() {
+		It("should return the latest Kubernetes version", func() {
+			offeredVersions := []garden.KubernetesVersion{
+				{
+					Version: "1.0.0",
+				},
+				{
+					Version: "0.0.1",
+				},
+				{
+					Version: "0.2.1",
+				},
+			}
+
+			offeredVersion, err := DetermineLatestKubernetesVersion(offeredVersions)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(offeredVersion.Version).To(Equal("1.0.0"))
+		})
+	})
+
+	var (
+		trueVar  = true
+		falseVar = false
+	)
+
+	DescribeTable("#ShootWantsBasicAuthentication",
+		func(kubeAPIServerConfig *garden.KubeAPIServerConfig, wantsBasicAuth bool) {
+			actualWantsBasicAuth := ShootWantsBasicAuthentication(kubeAPIServerConfig)
+
+			Expect(actualWantsBasicAuth).To(Equal(wantsBasicAuth))
+		},
+		Entry("no kubeapiserver configuration", nil, true),
+		Entry("field not set", &garden.KubeAPIServerConfig{}, true),
+		Entry("explicitly enabled", &garden.KubeAPIServerConfig{EnableBasicAuthentication: &trueVar}, true),
+		Entry("explicitly disabled", &garden.KubeAPIServerConfig{EnableBasicAuthentication: &falseVar}, false),
+	)
+
+	DescribeTable("#TaintsHave",
+		func(taints []garden.SeedTaint, key string, expectation bool) {
+			Expect(TaintsHave(taints, key)).To(Equal(expectation))
+		},
+		Entry("taint exists", []garden.SeedTaint{{Key: "foo"}}, "foo", true),
+		Entry("taint does not exist", []garden.SeedTaint{{Key: "foo"}}, "bar", false),
+	)
+
+	DescribeTable("#QuotaScope",
+		func(apiVersion, kind, expectedScope string, expectedErr gomegatypes.GomegaMatcher) {
+			scope, err := QuotaScope(corev1.ObjectReference{APIVersion: apiVersion, Kind: kind})
+			Expect(scope).To(Equal(expectedScope))
+			Expect(err).To(expectedErr)
+		},
+
+		Entry("project", "core.gardener.cloud/v1alpha1", "Project", "project", BeNil()),
+		Entry("secret", "v1", "Secret", "secret", BeNil()),
+		Entry("unknown", "v2", "Foo", "", HaveOccurred()),
+	)
 })

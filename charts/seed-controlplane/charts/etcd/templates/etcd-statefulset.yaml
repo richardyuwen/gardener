@@ -1,26 +1,8 @@
-apiVersion: v1
-kind: Service
-metadata:
-  name: etcd-{{ .Values.role }}-client
-  namespace: {{ .Release.Namespace }}
-  labels:
-    app: etcd-statefulset
-    role: {{ .Values.role }}
-spec:
-  type: ClusterIP
-  sessionAffinity: None
-  selector:
-    app: etcd-statefulset
-    role: {{ .Values.role }}
-  ports:
-  - name: client
-    protocol: TCP
-    port: 2379
-    targetPort: 2379
----
 apiVersion: {{ include "statefulsetversion" . }}
 kind: StatefulSet
 metadata:
+  annotations:
+    "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
   name: etcd-{{ .Values.role }}
   namespace: {{ .Release.Namespace }}
   labels:
@@ -47,6 +29,9 @@ spec:
         garden.sapcloud.io/role: controlplane
         app: etcd-statefulset
         role: {{ .Values.role }}
+        networking.gardener.cloud/to-dns: allowed
+        networking.gardener.cloud/to-public-networks: allowed
+        networking.gardener.cloud/to-private-networks: allowed
     spec:
       priorityClassName: gardener-shoot-controlplane
       containers:
@@ -59,7 +44,7 @@ spec:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 15
+          initialDelaySeconds: 5
           periodSeconds: 5
         livenessProbe:
           exec:
@@ -71,16 +56,16 @@ spec:
             - --cert=/var/etcd/ssl/client/tls.crt
             - --key=/var/etcd/ssl/client/tls.key
             - --cacert=/var/etcd/ssl/ca/ca.crt
-            - --endpoints=https://etcd-{{ .Values.role }}-0:2379
+            - --endpoints=https://etcd-{{ .Values.role }}-0:{{ .Values.servicePorts.client }}
             - get
             - foo
           initialDelaySeconds: 15
           periodSeconds: 5
         ports:
-        - containerPort: 2380
+        - containerPort: {{ .Values.servicePorts.server }}
           name: serverport
           protocol: TCP
-        - containerPort: 2379
+        - containerPort: {{ .Values.servicePorts.client }}
           name: clientport
           protocol: TCP
         resources:
@@ -89,10 +74,15 @@ spec:
             memory: 1000Mi
           limits:
             cpu: 2500m
-            memory: 3584Mi
+            memory: 4Gi
         volumeMounts:
+{{- if eq .Values.role "main" }}
+        - name: {{ .Values.role }}-etcd
+          mountPath: /var/etcd/data
+{{- else }}
         - name: etcd-{{ .Values.role }}
           mountPath: /var/etcd/data
+{{- end}}
         - name: etcd-bootstrap
           mountPath: /bootstrap
         - name: ca-etcd
@@ -101,54 +91,6 @@ spec:
           mountPath: /var/etcd/ssl/server
         - name: etcd-client-tls
           mountPath: /var/etcd/ssl/client
-      - name: backup-restore
-        command:
-        - etcdbrctl
-        - server
-        - --schedule={{ .Values.backup.schedule }}
-        - --data-dir=/var/etcd/data/new.etcd
-        - --storage-provider={{ .Values.backup.storageProvider }}
-        - --store-prefix=etcd-{{ .Values.role }}
-        - --cert=/var/etcd/ssl/client/tls.crt
-        - --key=/var/etcd/ssl/client/tls.key
-        - --cacert=/var/etcd/ssl/ca/ca.crt
-        - --insecure-transport=false
-        - --insecure-skip-tls-verify=false
-        - --endpoints=https://etcd-{{ .Values.role }}-0:2379
-        - --etcd-connection-timeout=300
-        - --delta-snapshot-period-seconds=300
-        - --delta-snapshot-memory-limit=104857600 #100MB
-        - --garbage-collection-period-seconds=43200
-        - --snapstore-temp-directory=/var/etcd/data/temp
-        image: {{ index .Values.images "etcd-backup-restore" }}
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 8080
-          name: server
-          protocol: TCP
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 1.5Gi
-        env:
-        - name: STORAGE_CONTAINER
-          value: {{ .Values.backup.storageContainer }}
-{{- if .Values.backup.env }}
-{{ toYaml .Values.backup.env | indent 8 }}
-{{- end }}
-        volumeMounts:
-        - name: etcd-{{ .Values.role }}
-          mountPath: /var/etcd/data
-        - name: ca-etcd
-          mountPath: /var/etcd/ssl/ca
-        - name: etcd-client-tls
-          mountPath: /var/etcd/ssl/client
-{{- if .Values.backup.volumeMounts }}
-{{ toYaml .Values.backup.volumeMounts | indent 8 }}
-{{- end }}
       volumes:
       - name: etcd-bootstrap
         configMap:
@@ -163,17 +105,16 @@ spec:
       - name: ca-etcd
         secret:
           secretName: ca-etcd
-{{- if .Values.backup.storageProvider }}
-      - name: {{ .Values.backup.backupSecret }}
-        secret:
-          secretName: {{ .Values.backup.backupSecret }}
-{{- end }}
   volumeClaimTemplates:
   - metadata:
+{{- if eq .Values.role "main" }}
+      name: {{ .Values.role }}-etcd
+{{- else }}
       name: etcd-{{ .Values.role }}
+{{- end }}
     spec:
       accessModes:
       - "ReadWriteOnce"
       resources:
         requests:
-          storage: {{ .Values.storage }}
+          storage: {{ .Values.storageCapacity }}

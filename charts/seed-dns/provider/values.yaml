@@ -1,0 +1,10 @@
+name: internal
+purpose: internal
+provider: ""
+secretData: {}
+domains:
+  include: []
+  exclude: []
+zones:
+  include: []
+  exclude: []

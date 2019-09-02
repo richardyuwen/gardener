@@ -37,6 +37,11 @@ func CAfterSuite(body func(context.Context), timeout time.Duration) {
 	ginkgo.AfterSuite(contextify(body, timeout), timeout.Seconds())
 }
 
+// CAfterEach contextifies Gingko's AfterEach
+func CAfterEach(body func(context.Context), timeout time.Duration) {
+	ginkgo.AfterEach(contextify(body, timeout), timeout.Seconds())
+}
+
 // CBeforeSuite contextifies Gingko's FIt
 func CBeforeSuite(body func(context.Context), timeout time.Duration) {
 	ginkgo.BeforeSuite(contextify(body, timeout), timeout.Seconds())
@@ -45,6 +50,11 @@ func CBeforeSuite(body func(context.Context), timeout time.Duration) {
 // CBeforeEach contextifies Gingko's BeforeEach
 func CBeforeEach(body func(ctx context.Context), timeout time.Duration) {
 	ginkgo.BeforeEach(contextify(body, timeout), timeout.Seconds())
+}
+
+// CJustBeforeEach contextifies Gingko's JustBeforeEach
+func CJustBeforeEach(body func(ctx context.Context), timeout time.Duration) {
+	ginkgo.JustBeforeEach(contextify(body, timeout), timeout.Seconds())
 }
 
 func contextify(body func(context.Context), timeout time.Duration) func() {

@@ -31,7 +31,7 @@ metadata:
 spec:
   type: aws
   providerConfig:
-    apiVersion: aws.extensions.gardener.cloud/v1alpha1
+    apiVersion: aws.provider.extensions.gardener.cloud/v1alpha1
     kind: InfrastructureConfig
     networks:
       vpc:
@@ -65,7 +65,7 @@ status:
   lastError: ..
   lastOperation: ...
   providerStatus:
-    apiVersion: aws.extensions.gardener.cloud/v1alpha1
+    apiVersion: aws.provider.extensions.gardener.cloud/v1alpha1
     kind: InfrastructureStatus
     vpc:
       id: vpc-1234
@@ -136,11 +136,12 @@ We are looking forward to your feedback if you have any!
 We have started implementing GEP-1 and are in the process of getting experience with the first extensions.
 Based on the resources discussed in GEP-1 the following table provides information about which parts of the domain-specific knowledge that is/was in-tree has been moved out already:
 
-| Status             | Resource                | Providers                                                               |
-|--------------------|-------------------------|-------------------------------------------------------------------------|
-| :x:                | `DNS`                   |  alicloud-dns<br>aws-route53<br>azure-dns<br>google-clouddns<br> openstack-designate |
-| :x:                | `BackupInfrastructure`  | aws<br>azure<br>gcp<br>openstack                                        |
-| :x:                | `Generic`               | certmgmt                                                                |
-| :x:                | `Infrastructure`        | alicloud<br>aws<br>azure<br>gcp<br>openstack<br>local (discontinued)    |
-| :white_check_mark: | `OperatingSystemConfig` | coredns                                                                 |
-| :x:                | `WorkerPoolConfig`      | alicloud<br>aws<br>azure<br>gcp<br>openstack                            |
+| Status             | Resource                | Providers                                                                            |
+|--------------------|-------------------------|--------------------------------------------------------------------------------------|
+| :white_check_mark: | `DNS`                   | [alicloud-dns<br>aws-route53<br>azure-dns<br>google-clouddns<br> openstack-designate](https://github.com/gardener/external-dns-management) |
+| :white_check_mark: | `OperatingSystemConfig` | [coreos](https://github.com/gardener/gardener-extensions/tree/master/controllers/os-coreos),[coreos-alicloud](https://github.com/gardener/gardener-extensions/tree/master/controllers/os-coreos-alicloud),[suse-jeos](https://github.com/gardener/gardener-extensions/tree/master/controllers/os-suse-jeos) |
+| :x:                | `BackupInfrastructure`  | alicloud<br>aws<br>azure<br>gcp<br>openstack                                         |
+| :x:                | `ControlPlane`          | alicloud<br>aws<br>azure<br>gcp<br>openstack<br>local (discontinued/replaced)        |
+| :white_check_mark: | `Infrastructure`        | [alicloud](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-alicloud)<br>[aws](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-aws)<br>[azure](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-azure)<br>[gcp](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-gcp)<br>[openstack](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-openstack)<br>local (discontinued/replaced) |
+| :white_check_mark: | `Worker`                | [alicloud](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-alicloud)<br>[aws](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-aws)<br>[azure](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-azure)<br>[gcp](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-gcp)<br>[openstack](https://github.com/gardener/gardener-extensions/tree/master/controllers/provider-openstack)<br>local (discontinued/replaced) |
+| :white_check_mark: | `Extension`             | [certificate-service](https://github.com/gardener/gardener-extensions/tree/master/controllers/extension-certificate-service) |

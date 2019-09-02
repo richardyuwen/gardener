@@ -16,210 +16,219 @@ package botanist
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 
-	"github.com/gardener/gardener/pkg/client/kubernetes"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
-	"k8s.io/apimachinery/pkg/util/runtime"
+	"github.com/gardener/gardener/pkg/utils/retry"
 
-	"github.com/hashicorp/go-multierror"
+	utilclient "github.com/gardener/gardener/pkg/utils/kubernetes/client"
+
+	"github.com/gardener/gardener/pkg/operation/common"
+	"github.com/gardener/gardener/pkg/utils/flow"
+
+	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	batchv1beta1 "k8s.io/api/batch/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	extensionsv1beta1 "k8s.io/api/extensions/v1beta1"
+	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	apiregistrationv1beta1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1beta1"
+	"k8s.io/kube-aggregator/pkg/controllers/autoregister"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const (
+	// DefaultInterval is the default interval for retry operations.
+	DefaultInterval = 5 * time.Second
+
+	// Provider is the kubernetes provider label.
+	Provider = "provider"
+	// KubernetesProvider is the 'kubernetes' value of the Provider label.
+	KubernetesProvider = "kubernetes"
+
+	// KubeAggregatorAutoManaged is the label whether an APIService is automanaged by kube-aggregator.
+	KubeAggregatorAutoManaged = autoregister.AutoRegisterManagedLabel
+
+	// MetadataNameField ist the `metadata.name` field for a field selector.
+	MetadataNameField = "metadata.name"
+)
+
+// MustNewRequirement creates a labels.Requirement with the given values and panics if there is an error.
+func MustNewRequirement(key string, op selection.Operator, vals ...string) labels.Requirement {
+	req, err := labels.NewRequirement(key, op, vals)
+	utilruntime.Must(err)
+	return *req
+}
 
 var (
-	exceptions = map[string]map[string]bool{
-		kubernetes.CustomResourceDefinitions: map[string]bool{
-			"felixconfigurations.crd.projectcalico.org":   true,
-			"bgppeers.crd.projectcalico.org":              true,
-			"bgpconfigurations.crd.projectcalico.org":     true,
-			"ippools.crd.projectcalico.org":               true,
-			"clusterinformations.crd.projectcalico.org":   true,
-			"globalnetworkpolicies.crd.projectcalico.org": true,
-			"globalnetworksets.crd.projectcalico.org":     true,
-			"networkpolicies.crd.projectcalico.org":       true,
-			"hostendpoints.crd.projectcalico.org":         true,
-		},
-		kubernetes.DaemonSets: {
-			fmt.Sprintf("%s/calico-node", metav1.NamespaceSystem):              true,
-			fmt.Sprintf("%s/kube-proxy", metav1.NamespaceSystem):               true,
-			fmt.Sprintf("%s/csi-disk-plugin-alicloud", metav1.NamespaceSystem): true,
-		},
-		kubernetes.Deployments: {
-			fmt.Sprintf("%s/coredns", metav1.NamespaceSystem):        true,
-			fmt.Sprintf("%s/metrics-server", metav1.NamespaceSystem): true,
-			fmt.Sprintf("%s/csi-attacher", metav1.NamespaceSystem):   true,
-		},
-		kubernetes.StatefulSets: {
-			fmt.Sprintf("%s/csi-provisioner", metav1.NamespaceSystem): true,
-			fmt.Sprintf("%s/csi-snapshotter", metav1.NamespaceSystem): true,
-		},
-		kubernetes.Namespaces: {
-			metav1.NamespacePublic:  true,
-			metav1.NamespaceSystem:  true,
-			metav1.NamespaceDefault: true,
-		},
-		kubernetes.Services: {
-			fmt.Sprintf("%s/kubernetes", metav1.NamespaceDefault): true,
-		},
+	// FinalizeAfterFiveMinutes is an option to finalize resources after five minutes.
+	FinalizeAfterFiveMinutes = utilclient.FinalizeGracePeriodSeconds(5 * 60)
+
+	// FinalizeAfterOneHour is an option to finalize resources after one hour.
+	FinalizeAfterOneHour = utilclient.FinalizeGracePeriodSeconds(60 * 60)
+
+	// ZeroGracePeriod is an option to delete resources with no grace period.
+	ZeroGracePeriod = utilclient.DeleteWith(utilclient.GracePeriodSeconds(0))
+
+	// NotSystemComponent is a requirement that something doesn't have the GardenRole GardenRoleSystemComponent.
+	NotSystemComponent = MustNewRequirement(common.GardenRole, selection.NotEquals, common.GardenRoleSystemComponent)
+	// NoCleanupPrevention is a requirement that the ShootNoCleanup label of something is not true.
+	NoCleanupPrevention = MustNewRequirement(common.ShootNoCleanup, selection.NotEquals, "true")
+	// NotKubernetesProvider is a requirement that the Provider label of something is not KubernetesProvider.
+	NotKubernetesProvider = MustNewRequirement(Provider, selection.NotEquals, KubernetesProvider)
+	// NotKubeAggregatorAutoManaged is a requirement that something is not auto-managed by Kube-Aggregator.
+	NotKubeAggregatorAutoManaged = MustNewRequirement(KubeAggregatorAutoManaged, selection.DoesNotExist)
+
+	// CleanupSelector is a selector that excludes system components and all resources not considered for auto cleanup.
+	CleanupSelector = labels.NewSelector().Add(NotSystemComponent).Add(NoCleanupPrevention)
+
+	// NoCleanupPreventionListOptions are CollectionMatching that exclude system components or non-auto clean upped resource.
+	NoCleanupPreventionListOptions = client.ListOptions{
+		LabelSelector: CleanupSelector,
 	}
+
+	// MutatingWebhookConfigurationCleanOptions is the delete selector for MutatingWebhookConfigurations.
+	MutatingWebhookConfigurationCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// ValidatingWebhookConfigurationCleanOptions is the delete selector for ValidatingWebhookConfigurations.
+	ValidatingWebhookConfigurationCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// CustomResourceDefinitionCleanOptions is the delete selector for CustomResources.
+	CustomResourceDefinitionCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// DaemonSetCleanOptions is the delete selector for DaemonSets.
+	DaemonSetCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// DeploymentCleanOptions is the delete selector for Deployments.
+	DeploymentCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// StatefulSetCleanOptions is the delete selector for StatefulSets.
+	StatefulSetCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// ServiceCleanOptions is the delete selector for Services.
+	ServiceCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&client.ListOptions{
+		LabelSelector: labels.NewSelector().Add(NotKubernetesProvider, NotSystemComponent, NoCleanupPrevention),
+	})))
+
+	// NamespaceCleanOptions is the delete selector for Namespaces.
+	NamespaceCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&client.ListOptions{
+		LabelSelector: CleanupSelector,
+		FieldSelector: fields.AndSelectors(
+			fields.OneTermNotEqualSelector(MetadataNameField, metav1.NamespacePublic),
+			fields.OneTermNotEqualSelector(MetadataNameField, metav1.NamespaceSystem),
+			fields.OneTermNotEqualSelector(MetadataNameField, metav1.NamespaceDefault),
+			fields.OneTermNotEqualSelector(MetadataNameField, corev1.NamespaceNodeLease),
+		),
+	})))
+
+	// APIServiceCleanOptions is the delete selector for APIServices.
+	APIServiceCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&client.ListOptions{
+		LabelSelector: labels.NewSelector().Add(NotSystemComponent, NotKubeAggregatorAutoManaged),
+	})))
+
+	// CronJobCleanOptions is the delete selector for CronJobs.
+	CronJobCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// IngressCleanOptions is the delete selector for Ingresses.
+	IngressCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// JobCleanOptions is the delete selector for Jobs.
+	JobCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// PodCleanOptions is the delete selector for Pods.
+	PodCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// ReplicaSetCleanOptions is the delete selector for ReplicaSets.
+	ReplicaSetCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// ReplicationControllerCleanOptions is the delete selector for ReplicationControllers.
+	ReplicationControllerCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// PersistentVolumeClaimCleanOptions is the delete selector for PersistentVolumeClaims.
+	PersistentVolumeClaimCleanOptions = utilclient.DeleteWith(utilclient.CollectionMatching(client.UseListOptions(&NoCleanupPreventionListOptions)))
+
+	// NamespaceErrorToleration are the errors to be tolerated during deletion.
+	NamespaceErrorToleration = utilclient.TolerateErrors(apierrors.IsConflict)
 )
 
-func excludeAddonManagerManagedListOptions() metav1.ListOptions {
-	selector := labels.NewSelector()
-	req, err := labels.NewRequirement("addonmanager.kubernetes.io/mode", selection.DoesNotExist, nil)
-	runtime.Must(err)
-	selector.Add(*req)
-	return metav1.ListOptions{
-		LabelSelector: selector.String(),
+func cleanResourceFn(cleanOps utilclient.CleanOps, c client.Client, list runtime.Object, opts ...utilclient.CleanOptionFunc) flow.TaskFn {
+	return func(ctx context.Context) error {
+		return retry.Until(ctx, DefaultInterval, func(ctx context.Context) (done bool, err error) {
+			if err := cleanOps.CleanAndEnsureGone(ctx, c, list, opts...); err != nil {
+				if utilclient.AreObjectsRemaining(err) {
+					return retry.MinorError(err)
+				}
+				return retry.SevereError(err)
+			}
+			return retry.Ok()
+		})
 	}
 }
 
 // CleanWebhooks deletes all Webhooks in the Shoot cluster that are not being managed by the addon manager.
 func (b *Botanist) CleanWebhooks(ctx context.Context) error {
-	var result error
-	admissionRegistration := b.K8sShootClient.Kubernetes().AdmissionregistrationV1beta1()
+	var (
+		c   = b.K8sShootClient.Client()
+		ops = utilclient.DefaultCleanOps()
+	)
 
-	if err := admissionRegistration.ValidatingWebhookConfigurations().DeleteCollection(nil, excludeAddonManagerManagedListOptions()); err != nil {
-		result = multierror.Append(result, err)
-	}
+	return flow.Parallel(
+		cleanResourceFn(ops, c, &admissionregistrationv1beta1.MutatingWebhookConfigurationList{}, MutatingWebhookConfigurationCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &admissionregistrationv1beta1.ValidatingWebhookConfigurationList{}, ValidatingWebhookConfigurationCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+	)(ctx)
+}
 
-	if err := admissionRegistration.MutatingWebhookConfigurations().DeleteCollection(nil, excludeAddonManagerManagedListOptions()); err != nil {
-		result = multierror.Append(result, err)
-	}
+// CleanExtendedAPIs removes API extensions like CRDs and API services from the Shoot cluster.
+func (b *Botanist) CleanExtendedAPIs(ctx context.Context) error {
+	var (
+		c   = b.K8sShootClient.Client()
+		ops = utilclient.DefaultCleanOps()
+	)
 
-	return result
+	return flow.Parallel(
+		cleanResourceFn(ops, c, &apiregistrationv1beta1.APIServiceList{}, APIServiceCleanOptions, ZeroGracePeriod, FinalizeAfterOneHour),
+		cleanResourceFn(ops, c, &apiextensionsv1beta1.CustomResourceDefinitionList{}, CustomResourceDefinitionCleanOptions, ZeroGracePeriod, FinalizeAfterOneHour),
+	)(ctx)
 }
 
 // CleanKubernetesResources deletes all the Kubernetes resources in the Shoot cluster
 // other than those stored in the exceptions map. It will check whether all the Kubernetes resources
 // in the Shoot cluster other than those stored in the exceptions map have been deleted.
 // It will return an error in case it has not finished yet, and nil if all resources are gone.
-func (b *Botanist) CleanKubernetesResources() error {
+func (b *Botanist) CleanKubernetesResources(ctx context.Context) error {
+	c := b.K8sShootClient.Client()
+	ops := utilclient.DefaultCleanOps()
+
+	return flow.Parallel(
+		cleanResourceFn(ops, c, &batchv1beta1.CronJobList{}, CronJobCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &appsv1.DaemonSetList{}, DaemonSetCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &appsv1.DeploymentList{}, DeploymentCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &extensionsv1beta1.IngressList{}, IngressCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &batchv1.JobList{}, JobCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &corev1.PodList{}, PodCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &appsv1.ReplicaSetList{}, ReplicaSetCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &corev1.ReplicationControllerList{}, ReplicationControllerCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &corev1.ServiceList{}, ServiceCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &appsv1.StatefulSetList{}, StatefulSetCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+		cleanResourceFn(ops, c, &corev1.PersistentVolumeClaimList{}, PersistentVolumeClaimCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes),
+	)(ctx)
+}
+
+// CleanShootNamespaces deletes all non-system namespaces in the Shoot cluster.
+// It assumes that all workload resources are cleaned up in previous step(s).
+func (b *Botanist) CleanShootNamespaces(ctx context.Context) error {
 	var (
-		wg     sync.WaitGroup
-		errors []error
+		c                 = b.K8sShootClient.Client()
+		namespaceCleaner  = utilclient.NewNamespaceCleaner(b.K8sShootClient.Kubernetes().CoreV1().Namespaces())
+		namespaceCleanOps = utilclient.NewCleanOps(namespaceCleaner, utilclient.DefaultGoneEnsurer())
 	)
 
-	// TODO: The following code need to be be refactored if the following bug for CSI is fixed:
-	// Because of the issue of https://github.com/kubernetes-csi/external-provisioner/issues/195 we can't allow
-	// direct deletion of PVs because otherwise the CSI plugin does not get notified and won't delete the PV.
-	// However, we want to wait until all PVs have been deleted. Attention: This won't delete PVs with a
-	// reclaimPolicy != Delete. Those PVs must be deleted manually!
-	var (
-		originalResourceAPIGroups = b.K8sShootClient.GetResourceAPIGroups()
-		modifiedResourceAPIGroups = make(map[string][]string, len(originalResourceAPIGroups))
-	)
-	for resource, apiGroupPath := range originalResourceAPIGroups {
-		modifiedResourceAPIGroups[resource] = apiGroupPath
-	}
-	if b.Shoot.UsesCSI() {
-		delete(modifiedResourceAPIGroups, kubernetes.PersistentVolumes)
-	}
-
-	if err := b.K8sShootClient.CleanupResources(exceptions, modifiedResourceAPIGroups); err != nil {
-		return err
-	}
-
-	for resource, apiGroupPath := range originalResourceAPIGroups {
-		wg.Add(1)
-		go func(apiGroupPath []string, resource string) {
-			defer wg.Done()
-			if err := b.waitForAPIGroupCleanedUp(apiGroupPath, resource); err != nil {
-				errors = append(errors, err)
-			}
-		}(apiGroupPath, resource)
-	}
-	wg.Wait()
-
-	if len(errors) == 0 {
-		return nil
-	}
-	return fmt.Errorf("Error(s) while waiting for Kubernetes resource cleanup: %+v", errors)
-}
-
-// CleanCustomResourceDefinitions deletes all the CRDs in the Kubernetes cluster (which
-// will delete the existing custom resources, recursively). It will wait until all resources
-// have been cleaned up.
-func (b *Botanist) CleanCustomResourceDefinitions() error {
-	var (
-		apiGroups       = b.K8sShootClient.GetResourceAPIGroups()
-		resource        = kubernetes.CustomResourceDefinitions
-		crdAPIGroupPath = apiGroups[resource]
-	)
-
-	if err := b.K8sShootClient.CleanupAPIGroupResources(exceptions, resource, crdAPIGroupPath); err != nil {
-		return err
-	}
-	return b.waitForAPIGroupCleanedUp(crdAPIGroupPath, resource)
-}
-
-// ForceDeleteCustomResourceDefinitions forcefully deletes all custom CRDs, accumulating
-// all errors in the process.
-func (b *Botanist) ForceDeleteCustomResourceDefinitions() error {
-	crdList, err := b.K8sShootClient.ListCRDs(metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-
-	var result error
-	for _, crd := range crdList.Items {
-		if omit, ok := exceptions[kubernetes.CustomResourceDefinitions][crd.Name]; !ok || !omit {
-			if err := b.K8sShootClient.DeleteCRDForcefully(crd.Name); err != nil && !apierrors.IsNotFound(err) {
-				result = multierror.Append(result, err)
-			}
-		}
-	}
-	return result
-}
-
-// CleanupCustomAPIServices deletes all the custom API services in the Kubernetes cluster.
-// It will wait until all resources have been cleaned up.
-func (b *Botanist) CleanupCustomAPIServices() error {
-	apiServiceList, err := b.K8sShootClient.ListAPIServices(metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-
-	var result error
-	for _, apiService := range apiServiceList.Items {
-		if apiService.Spec.Service != nil {
-			if err := b.K8sShootClient.DeleteAPIService(apiService.Name); err != nil && !apierrors.IsNotFound(err) {
-				result = multierror.Append(result, err)
-			}
-		}
-	}
-	return result
-}
-
-// ForceDeleteCustomAPIServices forcefully deletes all custom API services,
-// accumulating all errors in the process.
-func (b *Botanist) ForceDeleteCustomAPIServices() error {
-	apiServiceList, err := b.K8sShootClient.ListAPIServices(metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-
-	var result error
-	for _, apiService := range apiServiceList.Items {
-		if apiService.Spec.Service != nil {
-			if err := b.K8sShootClient.DeleteAPIServiceForcefully(apiService.Name); err != nil && !apierrors.IsNotFound(err) {
-				result = multierror.Append(result, err)
-			}
-		}
-	}
-	return result
-}
-
-func (b *Botanist) waitForAPIGroupCleanedUp(apiGroupPath []string, resource string) error {
-	if err := wait.PollImmediate(5*time.Second, 5*time.Minute, func() (bool, error) {
-		return b.K8sShootClient.CheckResourceCleanup(b.Logger, exceptions, resource, apiGroupPath)
-	}); err != nil {
-		return fmt.Errorf("Error while waiting for cleanup of '%s' resources: '%s'", resource, err.Error())
-	}
-	return nil
+	return cleanResourceFn(namespaceCleanOps, c, &corev1.NamespaceList{}, NamespaceCleanOptions, ZeroGracePeriod, FinalizeAfterFiveMinutes, NamespaceErrorToleration)(ctx)
 }

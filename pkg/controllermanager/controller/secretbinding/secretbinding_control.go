@@ -15,6 +15,7 @@
 package secretbinding
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -30,6 +31,7 @@ import (
 	kubecorev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func (c *Controller) secretBindingAdd(obj interface{}) {
@@ -87,9 +89,8 @@ type ControlInterface interface {
 }
 
 // NewDefaultControl returns a new instance of the default implementation ControlInterface that
-// implements the documented semantics for SecretBindings. updater is the UpdaterInterface used
-// to update the status of SecretBindings. You should use an instance returned from NewDefaultControl() for any
-// scenario other than testing.
+// implements the documented semantics for SecretBindings. You should use an instance returned from NewDefaultControl()
+// for any scenario other than testing.
 func NewDefaultControl(k8sGardenClient kubernetes.Interface, k8sGardenInformers gardeninformers.SharedInformerFactory, recorder record.EventRecorder, secretLister kubecorev1listers.SecretLister, shootLister gardenlisters.ShootLister) ControlInterface {
 	return &defaultControl{k8sGardenClient, k8sGardenInformers, recorder, secretLister, shootLister}
 }
@@ -136,7 +137,7 @@ func (c *defaultControl) ReconcileSecretBinding(obj *gardenv1beta1.SecretBinding
 				secretFinalizers := sets.NewString(secret.Finalizers...)
 				secretFinalizers.Delete(gardenv1beta1.ExternalGardenerName)
 				secret.Finalizers = secretFinalizers.UnsortedList()
-				if _, err := c.k8sGardenClient.UpdateSecretObject(secret); err != nil && !apierrors.IsNotFound(err) {
+				if err := c.k8sGardenClient.Client().Update(context.TODO(), secret); client.IgnoreNotFound(err) != nil {
 					secretBindingLogger.Error(err.Error())
 					return err
 				}
@@ -149,7 +150,7 @@ func (c *defaultControl) ReconcileSecretBinding(obj *gardenv1beta1.SecretBinding
 			secretBindingFinalizers := sets.NewString(secretBinding.Finalizers...)
 			secretBindingFinalizers.Delete(gardenv1beta1.GardenerName)
 			secretBinding.Finalizers = secretBindingFinalizers.UnsortedList()
-			if _, err := c.k8sGardenClient.Garden().GardenV1beta1().SecretBindings(secretBinding.Namespace).Update(secretBinding); err != nil && !apierrors.IsNotFound(err) {
+			if _, err := c.k8sGardenClient.Garden().GardenV1beta1().SecretBindings(secretBinding.Namespace).Update(secretBinding); client.IgnoreNotFound(err) != nil {
 				secretBindingLogger.Error(err.Error())
 				return err
 			}
@@ -169,11 +170,11 @@ func (c *defaultControl) ReconcileSecretBinding(obj *gardenv1beta1.SecretBinding
 	secretFinalizers := sets.NewString(secret.Finalizers...)
 	if !secretFinalizers.Has(gardenv1beta1.ExternalGardenerName) {
 		secretFinalizers.Insert(gardenv1beta1.ExternalGardenerName)
-	}
-	secret.Finalizers = secretFinalizers.UnsortedList()
-	if _, err := c.k8sGardenClient.UpdateSecretObject(secret); err != nil {
-		secretBindingLogger.Error(err.Error())
-		return err
+		secret.Finalizers = secretFinalizers.UnsortedList()
+		if err := c.k8sGardenClient.Client().Update(context.TODO(), secret); err != nil {
+			secretBindingLogger.Error(err.Error())
+			return err
+		}
 	}
 
 	return nil

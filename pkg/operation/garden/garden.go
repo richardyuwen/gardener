@@ -15,40 +15,109 @@
 package garden
 
 import (
+	"context"
 	"fmt"
+	"strings"
 
-	"github.com/gardener/gardener/pkg/apis/garden"
 	gardenlisters "github.com/gardener/gardener/pkg/client/garden/listers/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
+	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	kubeinformers "k8s.io/client-go/informers"
 )
 
 // New creates a new Garden object (based on a Shoot object).
-func New(projectLister gardenlisters.ProjectLister, namespace string) (*Garden, error) {
+func New(projectLister gardenlisters.ProjectLister, namespace string, secrets map[string]*corev1.Secret) (*Garden, error) {
 	project, err := common.ProjectForNamespace(projectLister, namespace)
 	if err != nil {
 		return nil, err
 	}
 
+	internalDomain, err := GetInternalDomain(secrets)
+	if err != nil {
+		return nil, err
+	}
+
+	defaultDomains, err := GetDefaultDomains(secrets)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Garden{
-		Project: project,
+		Project:        project,
+		InternalDomain: internalDomain,
+		DefaultDomains: defaultDomains,
 	}, nil
+}
+
+// GetDefaultDomains finds all the default domain secrets within the given map and returns a list of
+// objects that contains all relevant information about the default domains.
+func GetDefaultDomains(secrets map[string]*corev1.Secret) ([]*Domain, error) {
+	var defaultDomains []*Domain
+
+	for key, secret := range secrets {
+		if strings.HasPrefix(key, common.GardenRoleDefaultDomain) {
+			domain, err := constructDomainFromSecret(secret)
+			if err != nil {
+				return nil, fmt.Errorf("error getting information out of default domain secret: %+v", err)
+			}
+			defaultDomains = append(defaultDomains, domain)
+		}
+	}
+
+	return defaultDomains, nil
+}
+
+// GetInternalDomain finds the internal domain secret within the given map and returns the object
+// that contains all relevant information about the internal domain.
+func GetInternalDomain(secrets map[string]*corev1.Secret) (*Domain, error) {
+	internalDomainSecret, ok := secrets[common.GardenRoleInternalDomain]
+	if !ok {
+		return nil, fmt.Errorf("missing secret with key %s", common.GardenRoleInternalDomain)
+	}
+
+	return constructDomainFromSecret(internalDomainSecret)
+}
+
+func constructDomainFromSecret(secret *corev1.Secret) (*Domain, error) {
+	provider, domain, includeZones, excludeZones, err := common.GetDomainInfoFromAnnotations(secret.Annotations)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Domain{
+		Domain:       domain,
+		Provider:     provider,
+		SecretData:   secret.Data,
+		IncludeZones: includeZones,
+		ExcludeZones: excludeZones,
+	}, nil
+}
+
+// DomainIsDefaultDomain identifies whether the given domain is a default domain.
+func DomainIsDefaultDomain(domain string, defaultDomains []*Domain) *Domain {
+	for _, defaultDomain := range defaultDomains {
+		if strings.HasSuffix(domain, defaultDomain.Domain) {
+			return defaultDomain
+		}
+	}
+	return nil
 }
 
 // ReadGardenSecrets reads the Kubernetes Secrets from the Garden cluster which are independent of Shoot clusters.
 // The Secret objects are stored on the Controller in order to pass them to created Garden objects later.
 func ReadGardenSecrets(k8sInformers kubeinformers.SharedInformerFactory) (map[string]*corev1.Secret, error) {
 	var (
-		secretsMap                                  = make(map[string]*corev1.Secret)
-		numberOfInternalDomainSecrets               = 0
-		numberOfOpenVPNDiffieHellmanSecrets         = 0
-		numberOfCertificateManagementConfigurations = 0
+		secretsMap                          = make(map[string]*corev1.Secret)
+		numberOfInternalDomainSecrets       = 0
+		numberOfOpenVPNDiffieHellmanSecrets = 0
 	)
 
 	selector, err := labels.Parse(common.GardenRole)
@@ -61,64 +130,53 @@ func ReadGardenSecrets(k8sInformers kubeinformers.SharedInformerFactory) (map[st
 	}
 
 	for _, secret := range secrets {
-		metadata := secret.ObjectMeta
-		name := metadata.Name
-		labels := metadata.Labels
-		annotations := metadata.Annotations
-
 		// Retrieving default domain secrets based on all secrets in the Garden namespace which have
 		// a label indicating the Garden role default-domain.
-		if labels[common.GardenRole] == common.GardenRoleDefaultDomain {
-			domain, err := extractDomain(annotations)
+		if secret.Labels[common.GardenRole] == common.GardenRoleDefaultDomain {
+			_, domain, _, _, err := common.GetDomainInfoFromAnnotations(secret.Annotations)
 			if err != nil {
-				logger.Logger.Warnf("The default domain secret %s is not valid: %v; ignoring it.", name, err)
+				logger.Logger.Warnf("error getting information out of default domain secret %s: %+v", secret.Name, err)
 				continue
 			}
 			defaultDomainSecret := secret
 			secretsMap[fmt.Sprintf("%s-%s", common.GardenRoleDefaultDomain, domain)] = defaultDomainSecret
-			logger.Logger.Infof("Found default domain secret %s for domain %s.", name, domain)
+			logger.Logger.Infof("Found default domain secret %s for domain %s.", secret.Name, domain)
 		}
 
 		// Retrieving internal domain secrets based on all secrets in the Garden namespace which have
 		// a label indicating the Garden role internal-domain.
-		if labels[common.GardenRole] == common.GardenRoleInternalDomain {
-			domain, err := extractDomain(annotations)
+		if secret.Labels[common.GardenRole] == common.GardenRoleInternalDomain {
+			_, domain, _, _, err := common.GetDomainInfoFromAnnotations(secret.Annotations)
 			if err != nil {
-				logger.Logger.Warnf("The internal domain secret %s is not valid: %v; ignoring it.", name, err)
+				logger.Logger.Warnf("error getting information out of internal domain secret %s: %+v", secret.Name, err)
 				continue
 			}
 			internalDomainSecret := secret
 			secretsMap[common.GardenRoleInternalDomain] = internalDomainSecret
-			logger.Logger.Infof("Found internal domain secret %s for domain %s.", name, domain)
+			logger.Logger.Infof("Found internal domain secret %s for domain %s.", secret.Name, domain)
 			numberOfInternalDomainSecrets++
 		}
 
 		// Retrieving alerting SMTP secrets based on all secrets in the Garden namespace which have
 		// a label indicating the Garden role alerting-smtp.
 		// Only when using the in-cluster config as we do not want to configure alerts in development modus.
-		if labels[common.GardenRole] == common.GardenRoleAlertingSMTP {
+		if secret.Labels[common.GardenRole] == common.GardenRoleAlertingSMTP {
 			alertingSMTP := secret
-			secretsMap[fmt.Sprintf("%s-%s", common.GardenRoleAlertingSMTP, name)] = alertingSMTP
-			logger.Logger.Infof("Found alerting SMTP secret %s.", name)
+			secretsMap[fmt.Sprintf("%s-%s", common.GardenRoleAlertingSMTP, secret.Name)] = alertingSMTP
+			logger.Logger.Infof("Found alerting SMTP secret %s.", secret.Name)
 		}
 
 		// Retrieving Diffie-Hellman secret for OpenVPN based on all secrets in the Garden namespace which have
 		// a label indicating the Garden role openvpn-diffie-hellman.
-		if labels[common.GardenRole] == common.GardenRoleOpenVPNDiffieHellman {
+		if secret.Labels[common.GardenRole] == common.GardenRoleOpenVPNDiffieHellman {
 			openvpnDiffieHellman := secret
 			key := "dh2048.pem"
 			if _, ok := secret.Data[key]; !ok {
 				return nil, fmt.Errorf("cannot use OpenVPN Diffie Hellman secret '%s' as it does not contain key '%s' (whose value should be the actual Diffie Hellman key)", secret.Name, key)
 			}
 			secretsMap[common.GardenRoleOpenVPNDiffieHellman] = openvpnDiffieHellman
-			logger.Logger.Infof("Found OpenVPN Diffie Hellman secret %s.", name)
+			logger.Logger.Infof("Found OpenVPN Diffie Hellman secret %s.", secret.Name)
 			numberOfOpenVPNDiffieHellmanSecrets++
-		}
-
-		if labels[common.GardenRole] == common.GardenRoleCertificateManagement {
-			secretsMap[common.GardenRoleCertificateManagement] = secret
-			logger.Logger.Infof("Found certificate management configuration %s.", name)
-			numberOfCertificateManagementConfigurations++
 		}
 	}
 
@@ -143,28 +201,32 @@ func ReadGardenSecrets(k8sInformers kubeinformers.SharedInformerFactory) (map[st
 		return nil, fmt.Errorf("can only accept at most one OpenVPN Diffie Hellman secret, but found %d", numberOfOpenVPNDiffieHellmanSecrets)
 	}
 
-	// For certificate management an instance of Cert-Manager will be deployed to the Seed cluster which requires a certain configuration.
-	// This configuration is placed in the Garden cluster and must not be exist more than one time.
-	if numberOfCertificateManagementConfigurations > 1 {
-		return nil, fmt.Errorf("can only accept at most one certificate management configuration secret, but found %d", numberOfCertificateManagementConfigurations)
-	}
-
 	return secretsMap, nil
 }
 
 // VerifyInternalDomainSecret verifies that the internal domain secret matches to the internal domain secret used for
 // existing Shoot clusters. It is not allowed to change the internal domain secret if there are existing Shoot clusters.
 func VerifyInternalDomainSecret(k8sGardenClient kubernetes.Interface, numberOfShoots int, internalDomainSecret *corev1.Secret) error {
-	currentDomain := internalDomainSecret.Annotations[common.DNSDomain]
+	_, currentDomain, _, _, err := common.GetDomainInfoFromAnnotations(internalDomainSecret.Annotations)
+	if err != nil {
+		return fmt.Errorf("error getting information out of current internal domain secret: %+v", err)
+	}
 
-	internalConfigMap, err := k8sGardenClient.GetConfigMap(common.GardenNamespace, common.ControllerManagerInternalConfigMapName)
+	internalConfigMap := &corev1.ConfigMap{}
+	err = k8sGardenClient.Client().Get(context.TODO(), kutil.Key(common.GardenNamespace, common.ControllerManagerInternalConfigMapName), internalConfigMap)
 	if apierrors.IsNotFound(err) || numberOfShoots == 0 {
-		if _, err := k8sGardenClient.CreateConfigMap(common.GardenNamespace, common.ControllerManagerInternalConfigMapName, map[string]string{
-			common.GardenRoleInternalDomain: currentDomain,
-		}, true); err != nil {
-			return err
+		configMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      common.ControllerManagerInternalConfigMapName,
+				Namespace: common.GardenNamespace,
+			},
 		}
-		return nil
+		return kutil.CreateOrUpdate(context.TODO(), k8sGardenClient.Client(), configMap, func() error {
+			configMap.Data = map[string]string{
+				common.GardenRoleInternalDomain: currentDomain,
+			}
+			return nil
+		})
 	}
 	if err != nil {
 		return err
@@ -190,25 +252,4 @@ func BootstrapCluster(k8sGardenClient kubernetes.Interface, gardenNamespace stri
 		return fmt.Errorf("the Kubernetes version of the Garden cluster must be at least %s", minGardenVersion)
 	}
 	return nil
-}
-
-func extractDomain(annotations map[string]string) (string, error) {
-	dnsProvider, ok := annotations[common.DNSProvider]
-	if !ok {
-		return "", fmt.Errorf("no annotation %s found", common.DNSProvider)
-	}
-
-	// Alicloud DNS does not support a hosted zone ID
-	if dnsProvider != string(garden.DNSAlicloud) {
-		if _, ok = annotations[common.DNSHostedZoneID]; !ok {
-			return "", fmt.Errorf("no annotation %s found", common.DNSHostedZoneID)
-		}
-	}
-
-	domain, ok := annotations[common.DNSDomain]
-	if !ok {
-		return "", fmt.Errorf("no annotation %s found", common.DNSDomain)
-	}
-
-	return domain, nil
 }

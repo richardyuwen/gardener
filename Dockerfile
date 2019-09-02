@@ -1,20 +1,21 @@
 #############      builder       #############
-FROM golang:1.12.1 AS builder
+FROM golang:1.12.8 AS builder
 
 WORKDIR /go/src/github.com/gardener/gardener
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GO111MODULE=on go install \
+  -mod=vendor \
   -ldflags "-X github.com/gardener/gardener/pkg/version.gitVersion=$(cat VERSION) \
             -X github.com/gardener/gardener/pkg/version.gitTreeState=$([ -z git status --porcelain 2>/dev/null ] && echo clean || echo dirty) \
             -X github.com/gardener/gardener/pkg/version.gitCommit=$(git rev-parse --verify HEAD) \
-            -X github.com/gardener/gardener/pkg/version.buildDate=$(date --rfc-3339=seconds | sed 's/ /T/')" \
+            -X github.com/gardener/gardener/pkg/version.buildDate=$(date --iso-8601=seconds)" \
   ./...
 
 #############      apiserver     #############
 FROM alpine:3.8 AS apiserver
 
-RUN apk add --update bash curl
+RUN apk add --update bash curl tzdata
 
 COPY --from=builder /go/bin/gardener-apiserver /gardener-apiserver
 
@@ -25,11 +26,7 @@ ENTRYPOINT ["/gardener-apiserver"]
 ############# controller-manager #############
 FROM alpine:3.8 AS controller-manager
 
-RUN apk add --update bash curl openvpn
-
-# https://github.com/golang/go/issues/20969, needed by Alicloud SDK
-ENV ZONEINFO=/zone-info/zoneinfo.zip
-COPY /assets/zoneinfo.zip /zone-info/zoneinfo.zip
+RUN apk add --update bash curl openvpn tzdata
 
 COPY --from=builder /go/bin/gardener-controller-manager /gardener-controller-manager
 COPY charts /charts
@@ -37,3 +34,14 @@ COPY charts /charts
 WORKDIR /
 
 ENTRYPOINT ["/gardener-controller-manager"]
+
+############# scheduler #############
+FROM alpine:3.8 AS scheduler
+
+RUN apk add --update bash curl
+
+COPY --from=builder /go/bin/gardener-scheduler /gardener-scheduler
+
+WORKDIR /
+
+ENTRYPOINT ["/gardener-scheduler"]

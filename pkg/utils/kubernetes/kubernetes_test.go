@@ -15,8 +15,14 @@
 package kubernetes
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
 	"github.com/golang/mock/gomock"
@@ -90,6 +96,27 @@ var _ = Describe("kubernetes", func() {
 
 		It("should panic if nameOpt is longer than 1", func() {
 			Expect(func() { ObjectMeta("foo", "bar", "baz") }).To(Panic())
+		})
+	})
+
+	Describe("#HasDeletionTimestamp", func() {
+		var namespace = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "foo",
+			},
+		}
+		It("should return false if no deletion timestamp is set", func() {
+			result, err := HasDeletionTimestamp(namespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeFalse())
+		})
+
+		It("should return true if timestamp is set", func() {
+			now := metav1.Now()
+			namespace.ObjectMeta.DeletionTimestamp = &now
+			result, err := HasDeletionTimestamp(namespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeTrue())
 		})
 	})
 
@@ -188,6 +215,22 @@ var _ = Describe("kubernetes", func() {
 		Entry("non-nil conflicting labels", map[string]string{"foo": "baz"}, "foo", "bar", map[string]string{"foo": "bar"}),
 	)
 
+	DescribeTable("#SetMetaDataAnnotation",
+		func(annotations map[string]string, key, value string, expectedAnnotations map[string]string) {
+			original := &metav1.ObjectMeta{Annotations: annotations}
+			modified := original.DeepCopy()
+
+			SetMetaDataAnnotation(modified, key, value)
+			modifiedWithOriginalAnnotations := modified.DeepCopy()
+			modifiedWithOriginalAnnotations.Annotations = annotations
+			Expect(modifiedWithOriginalAnnotations).To(Equal(original), "not only annotations were modified")
+			Expect(modified.Annotations).To(Equal(expectedAnnotations))
+		},
+		Entry("nil annotations", nil, "foo", "bar", map[string]string{"foo": "bar"}),
+		Entry("non-nil non-conflicting annotations", map[string]string{"bar": "baz"}, "foo", "bar", map[string]string{"bar": "baz", "foo": "bar"}),
+		Entry("non-nil conflicting annotations", map[string]string{"foo": "baz"}, "foo", "bar", map[string]string{"foo": "bar"}),
+	)
+
 	DescribeTable("#HasMetaDataAnnotation",
 		func(annotations map[string]string, key, value string, result bool) {
 			meta := &metav1.ObjectMeta{
@@ -222,7 +265,7 @@ var _ = Describe("kubernetes", func() {
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
-									Name:  "aws-lb-readvertiser",
+									Name:  "lb-deployment",
 									Image: fakeImage,
 								},
 							},
@@ -233,8 +276,8 @@ var _ = Describe("kubernetes", func() {
 			ok, _ := ValidDeploymentContainerImageVersion(&deployment, containerName, minVersion)
 			Expect(ok).To(Equal(expected))
 		},
-		Entry("invalid version", "aws-lb-readvertiser", `0.4.0`, false),
-		Entry("invalid container name", "aws-readvertiser", "0.3.0", false),
+		Entry("invalid version", "lb-deployment", `0.4.0`, false),
+		Entry("invalid container name", "deployment", "0.3.0", false),
 	)
 
 	Context("DeploymentLister", func() {
@@ -651,6 +694,145 @@ var _ = Describe("kubernetes", func() {
 			Entry("everything", nodes, labels.Everything(), nodes),
 			Entry("nothing", nodes, labels.Nothing(), nil),
 			Entry("a labels", nodes, labels.SelectorFromSet(labels.Set(aLabels)), []*corev1.Node{n1ANode, n2ANode}),
-			Entry("b labels", nodes, labels.SelectorFromSet(labels.Set(bLabels)), []*corev1.Node{n1BNode, n2BNode}))
+			Entry("b labels", nodes, labels.SelectorFromSet(labels.Set(bLabels)), []*corev1.Node{n1BNode, n2BNode}),
+		)
+
+		Describe("#WaitUntilResourceDeleted", func() {
+			var (
+				namespace = "bar"
+				name      = "foo"
+				key       = Key(namespace, name)
+				configMap = &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+						Name:      name,
+					},
+				}
+			)
+
+			It("should wait until the resource is deleted", func() {
+				ctx := context.TODO()
+
+				gomock.InOrder(
+					c.EXPECT().Get(ctx, key, configMap),
+					c.EXPECT().Get(ctx, key, configMap),
+					c.EXPECT().Get(ctx, key, configMap).Return(apierrors.NewNotFound(schema.GroupResource{}, name)),
+				)
+
+				Expect(WaitUntilResourceDeleted(ctx, c, configMap, time.Microsecond)).To(Succeed())
+			})
+
+			It("should timeout", func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				gomock.InOrder(
+					c.EXPECT().Get(ctx, key, configMap),
+					c.EXPECT().Get(ctx, key, configMap).DoAndReturn(func(_ context.Context, _ client.ObjectKey, _ runtime.Object) error {
+						cancel()
+						return nil
+					}),
+				)
+
+				Expect(WaitUntilResourceDeleted(ctx, c, configMap, time.Microsecond)).To(HaveOccurred())
+			})
+
+			It("return an unexpected error", func() {
+				ctx := context.TODO()
+
+				expectedErr := fmt.Errorf("unexpected")
+				c.EXPECT().Get(ctx, key, configMap).Return(expectedErr)
+
+				err := WaitUntilResourceDeleted(ctx, c, configMap, time.Microsecond)
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(BeIdenticalTo(expectedErr))
+			})
+		})
 	})
+
+	DescribeTable("#TruncateLabelValue",
+		func(s, expected string) {
+			Expect(TruncateLabelValue(s)).To(Equal(expected))
+		},
+		Entry("< 63 chars", "foo", "foo"),
+		Entry("= 63 chars", strings.Repeat("a", 63), strings.Repeat("a", 63)),
+		Entry("> 63 chars", strings.Repeat("a", 64), strings.Repeat("a", 63)))
+
+	Describe("#GetLoadBalancerIngress", func() {
+		var (
+			namespace = "foo"
+			name      = "bar"
+			key       = Key(namespace, name)
+		)
+
+		It("should return an unexpected client error", func() {
+			ctx := context.TODO()
+			expectedErr := fmt.Errorf("unexpected")
+
+			c.EXPECT().Get(ctx, key, gomock.AssignableToTypeOf(&corev1.Service{})).Return(expectedErr)
+
+			_, err := GetLoadBalancerIngress(ctx, c, namespace, name)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(BeIdenticalTo(expectedErr))
+		})
+
+		It("should return an error because no ingresses found", func() {
+			ctx := context.TODO()
+
+			c.EXPECT().Get(ctx, key, gomock.AssignableToTypeOf(&corev1.Service{}))
+
+			_, err := GetLoadBalancerIngress(ctx, c, namespace, name)
+
+			Expect(err).To(MatchError("`.status.loadBalancer.ingress[]` has no elements yet, i.e. external load balancer has not been created (is your quota limit exceeded/reached?)"))
+		})
+
+		It("should return an ip address", func() {
+			var (
+				ctx        = context.TODO()
+				expectedIP = "1.2.3.4"
+			)
+
+			c.EXPECT().Get(ctx, key, gomock.AssignableToTypeOf(&corev1.Service{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, service *corev1.Service) error {
+				service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: expectedIP}}
+				return nil
+			})
+
+			ingress, err := GetLoadBalancerIngress(ctx, c, namespace, name)
+
+			Expect(ingress).To(Equal(expectedIP))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return an hostname address", func() {
+			var (
+				ctx              = context.TODO()
+				expectedHostname = "cluster.local"
+			)
+
+			c.EXPECT().Get(ctx, key, gomock.AssignableToTypeOf(&corev1.Service{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, service *corev1.Service) error {
+				service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: expectedHostname}}
+				return nil
+			})
+
+			ingress, err := GetLoadBalancerIngress(ctx, c, namespace, name)
+
+			Expect(ingress).To(Equal(expectedHostname))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return an error if neither ip nor hostname were set", func() {
+			ctx := context.TODO()
+
+			c.EXPECT().Get(ctx, key, gomock.AssignableToTypeOf(&corev1.Service{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, service *corev1.Service) error {
+				service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{}}
+				return nil
+			})
+
+			_, err := GetLoadBalancerIngress(ctx, c, namespace, name)
+
+			Expect(err).To(MatchError("`.status.loadBalancer.ingress[]` has an element which does neither contain `.ip` nor `.hostname`"))
+		})
+	})
+
 })

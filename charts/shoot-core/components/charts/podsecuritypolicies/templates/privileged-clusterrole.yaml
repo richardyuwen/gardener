@@ -1,0 +1,14 @@
+apiVersion: {{ include "rbacversion" . }}
+kind: ClusterRole
+metadata:
+  name: garden.sapcloud.io:psp:privileged
+rules:
+- apiGroups:
+  - policy
+  - extensions
+  resourceNames:
+  - gardener.privileged
+  resources:
+  - podsecuritypolicies
+  verbs:
+  - use

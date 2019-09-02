@@ -1,0 +1,26 @@
+kind: TestDefinition
+metadata:
+  name: plant-test
+spec:
+  owner: gardener-oq@listserv.sap.com
+  description: Tests the creation of a plant.
+
+  activeDeadlineSeconds: 600
+  labels: ["default"]
+
+  config:
+  - name: GO111MODULE
+    value: "on"
+    type: env
+
+  command: [bash, -c]
+  args:
+    - >-
+      go test -mod=vendor ./test/integration/plants
+      --v -ginkgo.v -ginkgo.progress -ginkgo.noColor
+      -kubeconfig-path=$TM_KUBECONFIG_PATH/gardener.config
+      -kubeconfig-path-externalcluster=$TM_KUBECONFIG_PATH/shoot.config
+      -plant-path=$(realpath ./example/100-plant.yaml)
+      -plant-test-namespace=$PROJECT_NAMESPACE
+
+  image: golang:1.12.7

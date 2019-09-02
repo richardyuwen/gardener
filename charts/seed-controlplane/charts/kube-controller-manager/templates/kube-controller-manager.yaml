@@ -43,6 +43,9 @@ spec:
         garden.sapcloud.io/role: controlplane
         app: kubernetes
         role: controller-manager
+        networking.gardener.cloud/to-dns: allowed
+        networking.gardener.cloud/to-shoot-apiserver: allowed
+        networking.gardener.cloud/from-prometheus: allowed
     spec:
       tolerations:
       - effect: NoExecute
@@ -53,24 +56,16 @@ spec:
         imagePullPolicy: IfNotPresent
         command:
         - /hyperkube
+        {{- if semverCompare "< 1.15" .Values.kubernetesVersion }}
         - controller-manager
+        {{- else }}
+        - kube-controller-manager
+        {{- end }}
         - --allocate-node-cidrs=true
         - --attach-detach-reconcile-sync-period=1m0s
         - --controllers=*,bootstrapsigner,tokencleaner
-        # We already have the cloud-controller-manager in place and deploy it next to every Shoot control plane.
-        # Though the kube-controller-manager should no longer require the cloud provider credentials or the cloud
-        # config after this change, the fact that we do not have a CSI plugin for the volumes in place yet, we still
-        # need to provide it with this information (config, credentials). The only thing the KCM still does with the
-        # cloud is to (de-)provisioning and de-/attaching volumes to nodes. The CSI plugins will take over this functionality,
-        # hence, once we have it we can also isolate KCM from interaction with the cloud.
-        # For the same reasons, the kubelet still needs the information and can be excluded from interacting with the cloud
-        # API once we have CSI.
-        {{- if (ne .Values.cloudProvider "") }}
-        - --cloud-provider=external
-        {{- end }}
-        {{- if not .Values.enableCSI}}
-        - --external-cloud-volume-plugin={{ .Values.cloudProvider }}
-        - --cloud-config=/etc/kubernetes/cloudprovider/cloudprovider.conf
+        {{- if .Values.nodeCIDRMaskSize }}
+        - --node-cidr-mask-size={{ .Values.nodeCIDRMaskSize }}
         {{- end }}
         - --cluster-cidr={{ .Values.podNetwork }}
         - --cluster-name={{ .Values.clusterName }}
@@ -107,11 +102,6 @@ spec:
         - --tls-cipher-suites={{ include "kubernetes.tlsCipherSuites" . | replace "\n" "," | trimPrefix "," }}
         - --use-service-account-credentials=true
         - --v=2
-        {{- range $index, $param := $.Values.additionalParameters }}
-        - {{ $param }}
-        {{- end }}
-        env:
-{{ toYaml .Values.environment | indent 10 }}
         livenessProbe:
           httpGet:
             path: /healthz
@@ -126,6 +116,10 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
           timeoutSeconds: 15
+        ports:
+        - name: metrics
+          containerPort: {{ include "kube-controller-manager.port" . }}
+          protocol: TCP
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
         resources:
@@ -139,10 +133,6 @@ spec:
           mountPath: /var/lib/kube-controller-manager
         - name: kube-controller-manager-server
           mountPath: /var/lib/kube-controller-manager-server
-        - name: cloud-provider-config
-          mountPath: /etc/kubernetes/cloudprovider
-        - name: cloudprovider
-          mountPath: /srv/cloudprovider
         - name: etcssl
           mountPath: /etc/ssl
           readOnly: true
@@ -166,12 +156,6 @@ spec:
       - name: kube-controller-manager-server
         secret:
           secretName: kube-controller-manager-server
-      - name: cloud-provider-config
-        configMap:
-          name: cloud-provider-config
-      - name: cloudprovider
-        secret:
-          secretName: cloudprovider
       - name: etcssl
         hostPath:
           path: /etc/ssl

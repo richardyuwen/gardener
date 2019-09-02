@@ -21,18 +21,22 @@ import (
 	"sort"
 	"strings"
 
-	corev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/core/v1alpha1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/operation"
 	"github.com/gardener/gardener/pkg/operation/common"
+	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 
+	dnsv1alpha1 "github.com/gardener/external-dns-management/pkg/apis/dns/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // New takes an operation object <o> and creates a new Botanist object. It checks whether the given Shoot DNS
@@ -67,18 +71,17 @@ func New(o *operation.Operation) (*Botanist, error) {
 }
 
 // RegisterAsSeed registers a Shoot cluster as a Seed in the Garden cluster.
-func (b *Botanist) RegisterAsSeed(protected, visible *bool, minimumVolumeSize *string) error {
+func (b *Botanist) RegisterAsSeed(protected, visible *bool, minimumVolumeSize *string, blockCIDRs []gardencorev1alpha1.CIDR, shootDefaults *gardenv1beta1.ShootNetworks, backup *gardenv1beta1.BackupProfile) error {
 	if b.Shoot.Info.Spec.DNS.Domain == nil {
 		return errors.New("cannot register Shoot as Seed if it does not specify a domain")
 	}
 
-	k8sNetworks := b.Shoot.GetK8SNetworks()
-	if k8sNetworks == nil {
-		return errors.New("could not retrieve K8SNetworks from the Shoot resource")
+	k8sNetworks, err := b.Shoot.GetK8SNetworks()
+	if err != nil {
+		return fmt.Errorf("could not retrieve K8SNetworks from the Shoot resource: %v", err)
 	}
 
 	var (
-		secretData      = b.Shoot.Secret.Data
 		secretName      = fmt.Sprintf("seed-%s", b.Shoot.Info.Name)
 		secretNamespace = common.GardenNamespace
 		controllerKind  = gardenv1beta1.SchemeGroupVersion.WithKind("Shoot")
@@ -94,29 +97,71 @@ func (b *Botanist) RegisterAsSeed(protected, visible *bool, minimumVolumeSize *s
 		}
 	}
 
-	secretData["kubeconfig"] = b.Secrets["kubecfg"].Data["kubeconfig"]
-
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            secretName,
-			Namespace:       secretNamespace,
-			OwnerReferences: ownerReferences,
+			Name:      secretName,
+			Namespace: secretNamespace,
 		},
-		Type: corev1.SecretTypeOpaque,
-		Data: secretData,
 	}
 
-	if _, err := b.K8sGardenClient.CreateSecretObject(secret, true); err != nil {
+	if err := kutil.CreateOrUpdate(context.TODO(), b.K8sGardenClient.Client(), secret, func() error {
+		secret.ObjectMeta.OwnerReferences = ownerReferences
+		secret.Type = corev1.SecretTypeOpaque
+		secret.Data = b.Shoot.Secret.Data
+		secret.Data["kubeconfig"] = b.Secrets[common.KubecfgSecretName].Data["kubeconfig"]
+		return nil
+	}); err != nil {
 		return err
 	}
 
+	var backupProfile *gardenv1beta1.BackupProfile
+	if backup != nil {
+		backupProfile = backup.DeepCopy()
+
+		if len(backupProfile.Provider) == 0 {
+			backupProfile.Provider = b.Seed.CloudProvider
+		}
+
+		if len(backupProfile.SecretRef.Name) == 0 || len(backupProfile.SecretRef.Namespace) == 0 {
+			var (
+				backupSecretName      = fmt.Sprintf("backup-%s", b.Shoot.Info.Name)
+				backupSecretNamespace = common.GardenNamespace
+			)
+
+			backupSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backupSecretName,
+					Namespace: backupSecretNamespace,
+				},
+			}
+
+			if _, err := controllerutil.CreateOrUpdate(context.TODO(), b.K8sGardenClient.Client(), backupSecret, func() error {
+				backupSecret.ObjectMeta.OwnerReferences = ownerReferences
+				backupSecret.Type = corev1.SecretTypeOpaque
+				backupSecret.Data = b.Shoot.Secret.Data
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			backupProfile.SecretRef.Name = backupSecretName
+			backupProfile.SecretRef.Namespace = backupSecretNamespace
+		}
+	}
+
 	seed := &gardenv1beta1.Seed{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            b.Shoot.Info.Name,
-			OwnerReferences: ownerReferences,
-			Annotations:     annotations,
-		},
-		Spec: gardenv1beta1.SeedSpec{
+		ObjectMeta: metav1.ObjectMeta{Name: b.Shoot.Info.Name},
+	}
+
+	_, err = controllerutil.CreateOrUpdate(context.TODO(), b.K8sGardenClient.Client(), seed, func() error {
+		seed.ObjectMeta.OwnerReferences = ownerReferences
+		seed.ObjectMeta.Annotations = annotations
+		seed.ObjectMeta.Labels = map[string]string{
+			common.GardenRole:             common.GardenRoleSeed,
+			gardencorev1alpha1.GardenRole: common.GardenRoleSeed,
+		}
+
+		seed.Spec = gardenv1beta1.SeedSpec{
 			Cloud: gardenv1beta1.SeedCloud{
 				Profile: b.Shoot.Info.Spec.Cloud.Profile,
 				Region:  b.Shoot.Info.Spec.Cloud.Region,
@@ -127,18 +172,18 @@ func (b *Botanist) RegisterAsSeed(protected, visible *bool, minimumVolumeSize *s
 				Namespace: secretNamespace,
 			},
 			Networks: gardenv1beta1.SeedNetworks{
-				Pods:     *k8sNetworks.Pods,
-				Services: *k8sNetworks.Services,
-				Nodes:    *k8sNetworks.Nodes,
+				Pods:          *k8sNetworks.Pods,
+				Services:      *k8sNetworks.Services,
+				Nodes:         *k8sNetworks.Nodes,
+				ShootDefaults: shootDefaults,
 			},
-			Protected: protected,
-			Visible:   visible,
-		},
-	}
-	_, err := b.K8sGardenClient.Garden().GardenV1beta1().Seeds().Create(seed)
-	if apierrors.IsAlreadyExists(err) {
-		_, err = b.K8sGardenClient.Garden().GardenV1beta1().Seeds().Update(seed)
-	}
+			BlockCIDRs: blockCIDRs,
+			Protected:  protected,
+			Visible:    visible,
+			Backup:     backupProfile,
+		}
+		return nil
+	})
 	return err
 }
 
@@ -152,39 +197,44 @@ func (b *Botanist) UnregisterAsSeed() error {
 		return err
 	}
 
-	if err := b.K8sGardenClient.Garden().GardenV1beta1().Seeds().Delete(seed.Name, nil); err != nil && !apierrors.IsNotFound(err) {
+	if err := b.K8sGardenClient.Garden().GardenV1beta1().Seeds().Delete(seed.Name, nil); client.IgnoreNotFound(err) != nil {
 		return err
 	}
-	if err := b.K8sGardenClient.DeleteSecret(seed.Spec.SecretRef.Namespace, seed.Spec.SecretRef.Name); err != nil && !apierrors.IsNotFound(err) {
-		return err
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      seed.Spec.SecretRef.Name,
+			Namespace: seed.Spec.SecretRef.Namespace,
+		},
 	}
-	return nil
+	return client.IgnoreNotFound(b.K8sGardenClient.Client().Delete(context.TODO(), secret, kubernetes.DefaultDeleteOptionFuncs...))
 }
 
 // RequiredExtensionsExist checks whether all required extensions needed for an shoot operation exist.
-func (b *Botanist) RequiredExtensionsExist(shoot *gardenv1beta1.Shoot) error {
-	controllerInstallationList := &corev1alpha1.ControllerInstallationList{}
-	if err := b.K8sGardenClient.Client().List(context.TODO(), nil, controllerInstallationList); err != nil {
+func (b *Botanist) RequiredExtensionsExist() error {
+	controllerInstallationList := &gardencorev1alpha1.ControllerInstallationList{}
+	if err := b.K8sGardenClient.Client().List(context.TODO(), controllerInstallationList); err != nil {
 		return err
 	}
 
-	requiredExtensions := map[string]string{
-		// At the moment we do only support `OperatingSystemConfig` resources, so we check for that:
-		extensionsv1alpha1.OperatingSystemConfigResource: string(b.Shoot.GetMachineImageName()),
-	}
+	requiredExtensions := b.computeRequiredExtensions()
 
 	for _, controllerInstallation := range controllerInstallationList.Items {
 		if controllerInstallation.Spec.SeedRef.Name != b.Seed.Info.Name {
 			continue
 		}
 
-		controllerRegistration := &corev1alpha1.ControllerRegistration{}
+		controllerRegistration := &gardencorev1alpha1.ControllerRegistration{}
 		if err := b.K8sGardenClient.Client().Get(context.TODO(), client.ObjectKey{Name: controllerInstallation.Spec.RegistrationRef.Name}, controllerRegistration); err != nil {
 			return err
 		}
 
-		for extensionKind, extensionType := range requiredExtensions {
-			if helper.IsResourceSupported(controllerRegistration.Spec.Resources, extensionKind, extensionType) && helper.IsControllerInstallationSuccessful(controllerInstallation) {
+		for extensionKind, extensionTypes := range requiredExtensions {
+			for extensionType := range extensionTypes {
+				if helper.IsResourceSupported(controllerRegistration.Spec.Resources, extensionKind, extensionType) && helper.IsControllerInstallationSuccessful(controllerInstallation) {
+					extensionTypes.Delete(extensionType)
+				}
+			}
+			if extensionTypes.Len() == 0 {
 				delete(requiredExtensions, extensionKind)
 			}
 		}
@@ -195,4 +245,41 @@ func (b *Botanist) RequiredExtensionsExist(shoot *gardenv1beta1.Shoot) error {
 	}
 
 	return nil
+}
+
+func (b *Botanist) computeRequiredExtensions() map[string]sets.String {
+	requiredExtensions := make(map[string]sets.String)
+
+	machineImagesSet := sets.NewString(b.Shoot.GetDefaultMachineImage().Name)
+	for _, machineImage := range b.Shoot.GetMachineImages() {
+		machineImagesSet.Insert(string(machineImage.Name))
+	}
+	requiredExtensions[extensionsv1alpha1.OperatingSystemConfigResource] = machineImagesSet
+
+	if b.Garden.InternalDomain.Provider != gardenv1beta1.DNSUnmanaged {
+		if requiredExtensions[dnsv1alpha1.DNSProviderKind] == nil {
+			requiredExtensions[dnsv1alpha1.DNSProviderKind] = sets.NewString()
+		}
+		requiredExtensions[dnsv1alpha1.DNSProviderKind].Insert(b.Garden.InternalDomain.Provider)
+	}
+
+	if b.Shoot.ExternalDomain != nil && b.Shoot.ExternalDomain.Provider != gardenv1beta1.DNSUnmanaged {
+		if requiredExtensions[dnsv1alpha1.DNSProviderKind] == nil {
+			requiredExtensions[dnsv1alpha1.DNSProviderKind] = sets.NewString()
+		}
+		requiredExtensions[dnsv1alpha1.DNSProviderKind].Insert(b.Shoot.ExternalDomain.Provider)
+	}
+
+	for extensionType := range b.Shoot.Extensions {
+		if requiredExtensions[extensionsv1alpha1.ExtensionResource] == nil {
+			requiredExtensions[extensionsv1alpha1.ExtensionResource] = sets.NewString()
+		}
+		requiredExtensions[extensionsv1alpha1.ExtensionResource].Insert(extensionType)
+	}
+
+	requiredExtensions[extensionsv1alpha1.InfrastructureResource] = sets.NewString(string(b.Shoot.CloudProvider))
+	requiredExtensions[extensionsv1alpha1.WorkerResource] = sets.NewString(string(b.Shoot.CloudProvider))
+	requiredExtensions[extensionsv1alpha1.ControlPlaneResource] = sets.NewString(string(b.Shoot.CloudProvider))
+
+	return requiredExtensions
 }

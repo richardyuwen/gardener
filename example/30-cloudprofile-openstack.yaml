@@ -11,21 +11,24 @@ spec:
   openstack:
     constraints:
       dnsProviders:
-      - name: aws-route53
       - name: unmanaged
       floatingPools:
       - name: MY-FLOATING-POOL
       kubernetes:
         versions:
-        - 1.13.4
-        - 1.12.6
-        - 1.11.8
+        - 1.15.2
+        - 1.14.5
+        - 1.13.9
+        - 1.12.10
+        - 1.11.10
         - 1.10.13
       loadBalancerProviders:
       - name: haproxy
       machineImages:
       - name: coreos
-        image: coreos-2023.5.0
+        versions:
+        - version: 2023.5.0
+        # Proper mappings to OpenStack Glance image names for this CloudProfile must exist in the `Worker` controller of the provider extension.
       machineTypes:
       - name: medium_2_4
         cpu: "2"

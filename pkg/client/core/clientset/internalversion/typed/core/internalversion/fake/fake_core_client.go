@@ -12,12 +12,24 @@ type FakeCore struct {
 	*testing.Fake
 }
 
+func (c *FakeCore) BackupBuckets() internalversion.BackupBucketInterface {
+	return &FakeBackupBuckets{c}
+}
+
+func (c *FakeCore) BackupEntries(namespace string) internalversion.BackupEntryInterface {
+	return &FakeBackupEntries{c, namespace}
+}
+
 func (c *FakeCore) ControllerInstallations() internalversion.ControllerInstallationInterface {
 	return &FakeControllerInstallations{c}
 }
 
 func (c *FakeCore) ControllerRegistrations() internalversion.ControllerRegistrationInterface {
 	return &FakeControllerRegistrations{c}
+}
+
+func (c *FakeCore) Plants(namespace string) internalversion.PlantInterface {
+	return &FakePlants{c, namespace}
 }
 
 // RESTClient returns a RESTClient that is used to communicate

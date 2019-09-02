@@ -16,13 +16,14 @@ package backupinfrastructure
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/gardener/gardener/pkg/api"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/garden"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/apis/garden/validation"
 	"github.com/gardener/gardener/pkg/operation/common"
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -66,6 +67,10 @@ func (backupInfrastructureStrategy) PrepareForUpdate(ctx context.Context, obj, o
 }
 
 func mustIncreaseGeneration(oldBackupInfrastructure, newBackupInfrastructure *garden.BackupInfrastructure) bool {
+	var (
+		oldPurpose, newPurpose string
+	)
+
 	// The BackupInfrastructure specification changes.
 	if !apiequality.Semantic.DeepEqual(oldBackupInfrastructure.Spec, newBackupInfrastructure.Spec) {
 		return true
@@ -76,7 +81,15 @@ func mustIncreaseGeneration(oldBackupInfrastructure, newBackupInfrastructure *ga
 		return true
 	}
 
-	if kutil.HasMetaDataAnnotation(&newBackupInfrastructure.ObjectMeta, common.BackupInfrastructureOperation, common.BackupInfrastructureReconcile) {
+	oldPresent, _ := strconv.ParseBool(oldBackupInfrastructure.ObjectMeta.Annotations[common.BackupInfrastructureForceDeletion])
+	newPresent, _ := strconv.ParseBool(newBackupInfrastructure.ObjectMeta.Annotations[common.BackupInfrastructureForceDeletion])
+	if oldPresent != newPresent && newPresent {
+		return true
+	}
+
+	oldPurpose = oldBackupInfrastructure.ObjectMeta.Annotations[gardencorev1alpha1.GardenPurpose]
+	newPurpose = newBackupInfrastructure.ObjectMeta.Annotations[gardencorev1alpha1.GardenPurpose]
+	if oldPurpose != newPurpose {
 		return true
 	}
 

@@ -19,11 +19,12 @@ package flow
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"github.com/gardener/gardener/pkg/utils"
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"io/ioutil"
-	"time"
 )
 
 const (
@@ -32,7 +33,7 @@ const (
 )
 
 // ProgressReporter is continuously called on progress in a flow.
-type ProgressReporter func(*Stats)
+type ProgressReporter func(context.Context, *Stats)
 
 type nodes map[TaskID]*node
 
@@ -96,7 +97,7 @@ func (n *node) addTargets(taskIDs ...TaskID) {
 // are left blank and don't affect the Flow.
 type Opts struct {
 	Logger           logrus.FieldLogger
-	ProgressReporter func(stats *Stats)
+	ProgressReporter func(ctx context.Context, stats *Stats)
 	Context          context.Context
 }
 
@@ -152,12 +153,6 @@ func InitialStats(all TaskIDs) *Stats {
 	}
 }
 
-func newNopLogger() logrus.FieldLogger {
-	logger := logrus.New()
-	logger.Out = ioutil.Discard
-	return logger
-}
-
 func newExecution(flow *Flow, logger logrus.FieldLogger, reporter ProgressReporter) *execution {
 	all := NewTaskIDs()
 
@@ -166,7 +161,7 @@ func newExecution(flow *Flow, logger logrus.FieldLogger, reporter ProgressReport
 	}
 
 	if logger == nil {
-		logger = newNopLogger()
+		logger = utils.NewNopLogger()
 	}
 	logger = logger.WithField(logKeyFlow, flow.name)
 
@@ -205,15 +200,15 @@ func (e *execution) runNode(ctx context.Context, id TaskID) {
 		log := e.log.WithField(logKeyTask, id)
 
 		start := time.Now().UTC()
-		log.Debugf("Started at %s", start)
+		log.Debugf("Started")
 		err := e.flow.nodes[id].fn(ctx)
 		end := time.Now().UTC()
-		log.Debugf("Finished at %s and took %s", end, end.Sub(start))
+		log.Debugf("Finished, took %s", end.Sub(start))
 
 		if err != nil {
-			log.Errorf("Failure: %+v", err)
+			log.WithError(err).Error("Error")
 		} else {
-			log.Infof("Succeeded")
+			log.Info("Succeeded")
 		}
 
 		err = errors.Wrapf(err, "task %q failed", id)
@@ -241,16 +236,16 @@ func (e *execution) processTriggers(ctx context.Context, id TaskID) {
 	}
 }
 
-func (e *execution) reportProgress() {
+func (e *execution) reportProgress(ctx context.Context) {
 	if e.progressReporter != nil {
-		e.progressReporter(e.stats.Copy())
+		e.progressReporter(ctx, e.stats.Copy())
 	}
 }
 
 func (e *execution) run(ctx context.Context) error {
 	defer close(e.done)
-	e.log.Infof("Starting flow")
-	e.reportProgress()
+	e.log.Info("Starting")
+	e.reportProgress(ctx)
 
 	var (
 		cancelErr error
@@ -259,7 +254,7 @@ func (e *execution) run(ctx context.Context) error {
 	for name := range roots {
 		if cancelErr = ctx.Err(); cancelErr == nil {
 			e.runNode(ctx, name)
-			e.reportProgress()
+			e.reportProgress(ctx)
 		}
 	}
 
@@ -274,10 +269,10 @@ func (e *execution) run(ctx context.Context) error {
 				e.processTriggers(ctx, result.TaskID)
 			}
 		}
-		e.reportProgress()
+		e.reportProgress(ctx)
 	}
 
-	e.log.Infof("Finished flow")
+	e.log.Info("Finished")
 	return e.result(cancelErr)
 }
 

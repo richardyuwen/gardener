@@ -28,7 +28,7 @@ type CIDR interface {
 	GetCIDR() garden.CIDR
 	// GetFieldPath returns the fieldpath
 	GetFieldPath() *field.Path
-	// GetIPNet optionaly returns the IPNet of the CIDR
+	// GetIPNet optionally returns the IPNet of the CIDR
 	GetIPNet() *net.IPNet
 	// Parse checks if CIDR parses
 	Parse() bool
@@ -49,8 +49,8 @@ type cidrPath struct {
 
 // NewCIDR creates a new instance of cidrPath
 func NewCIDR(c garden.CIDR, f *field.Path) CIDR {
-	_, ipnet, err := net.ParseCIDR(string(c))
-	return &cidrPath{c, f, ipnet, err}
+	_, ipNet, err := net.ParseCIDR(string(c))
+	return &cidrPath{c, f, ipNet, err}
 }
 
 func (c *cidrPath) ValidateSubset(subsets ...CIDR) field.ErrorList {

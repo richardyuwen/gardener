@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
-	"github.com/gardener/gardener/pkg/apis/garden/v1beta1/helper"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	gardencorelisters "github.com/gardener/gardener/pkg/client/core/listers/core/v1alpha1"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/externalversions"
@@ -32,22 +32,16 @@ import (
 	gardenmetrics "github.com/gardener/gardener/pkg/controllermanager/metrics"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
-	"github.com/gardener/gardener/pkg/utils/reconcilescheduler"
 
-	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/robfig/cron"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	kubeinformers "k8s.io/client-go/informers"
 	kubecorev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // Controller controls Shoots.
@@ -57,7 +51,7 @@ type Controller struct {
 	k8sGardenCoreInformers gardencoreinformers.SharedInformerFactory
 
 	config                        *config.ControllerManagerConfiguration
-	control                       ControlInterface
+	identity                      *gardenv1beta1.Gardener
 	careControl                   CareControlInterface
 	maintenanceControl            MaintenanceControlInterface
 	quotaControl                  QuotaControlInterface
@@ -65,8 +59,7 @@ type Controller struct {
 	recorder                      record.EventRecorder
 	secrets                       map[string]*corev1.Secret
 	imageVector                   imagevector.ImageVector
-	scheduler                     reconcilescheduler.Interface
-	shootToHibernationCron        map[string]*cron.Cron
+	hibernationScheduleRegistry   HibernationScheduleRegistry
 
 	seedLister                   gardenlisters.SeedLister
 	shootLister                  gardenlisters.ShootLister
@@ -133,7 +126,7 @@ func NewShootController(k8sGardenClient kubernetes.Interface, k8sGardenInformers
 		k8sGardenCoreInformers: k8sGardenCoreInformers,
 
 		config:                        config,
-		control:                       NewDefaultControl(k8sGardenClient, gardenV1beta1Informer, secrets, imageVector, identity, config, gardenNamespace, recorder),
+		identity:                      identity,
 		careControl:                   NewDefaultCareControl(k8sGardenClient, gardenV1beta1Informer, secrets, imageVector, identity, config),
 		maintenanceControl:            NewDefaultMaintenanceControl(k8sGardenClient, gardenV1beta1Informer, secrets, imageVector, identity, recorder),
 		quotaControl:                  NewDefaultQuotaControl(k8sGardenClient, gardenV1beta1Informer),
@@ -141,8 +134,7 @@ func NewShootController(k8sGardenClient kubernetes.Interface, k8sGardenInformers
 		recorder:                      recorder,
 		secrets:                       secrets,
 		imageVector:                   imageVector,
-		scheduler:                     reconcilescheduler.New(nil),
-		shootToHibernationCron:        make(map[string]*cron.Cron),
+		hibernationScheduleRegistry:   NewHibernationScheduleRegistry(),
 
 		seedLister:                   seedLister,
 		shootLister:                  shootLister,
@@ -163,12 +155,6 @@ func NewShootController(k8sGardenClient kubernetes.Interface, k8sGardenInformers
 
 		workerCh: make(chan int),
 	}
-
-	seedInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    shootController.seedAdd,
-		UpdateFunc: shootController.seedUpdate,
-		DeleteFunc: shootController.seedDelete,
-	})
 
 	shootInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    shootController.shootAdd,
@@ -250,47 +236,37 @@ func (c *Controller) Run(ctx context.Context, shootWorkers, shootCareWorkers, sh
 		newShoot := shoot.DeepCopy()
 
 		// Check if the status indicates that an operation is processing and mark it as "aborted".
-		if shoot.Status.LastOperation != nil && shoot.Status.LastOperation.State == gardenv1beta1.ShootLastOperationStateProcessing {
-			newShoot.Status.LastOperation.State = gardenv1beta1.ShootLastOperationStateAborted
-			if _, err := c.k8sGardenClient.Garden().Garden().Shoots(newShoot.Namespace).UpdateStatus(newShoot); err != nil {
+		if shoot.Status.LastOperation != nil && shoot.Status.LastOperation.State == gardencorev1alpha1.LastOperationStateProcessing {
+			newShoot.Status.LastOperation.State = gardencorev1alpha1.LastOperationStateAborted
+			if _, err := c.k8sGardenClient.Garden().GardenV1beta1().Shoots(newShoot.Namespace).UpdateStatus(newShoot); err != nil {
 				panic(fmt.Sprintf("Failed to update shoot status [%v]: %v ", newShoot.Name, err.Error()))
 			}
 		}
-
-		// Migration from in-tree CoreOS/operating system support to out-of-tree: We have to rename the old machine image names so that
-		// they fit with the new extension controllers.
-		// This code can be removed in a further version.
-		//'local' cloud provider doesn't need machine name migration
-		if newShoot.Spec.Cloud.Local != nil || shoot.DeletionTimestamp != nil {
-			continue
-		}
-		utilruntime.Must(errors.Wrapf(c.migrateMachineImageNames(newShoot), "Failed to migrate machine image for shoot %q", shoot.Name))
 	}
 
 	logger.Logger.Info("Shoot controller initialized.")
 
 	for i := 0; i < shootWorkers; i++ {
-		controllerutils.CreateWorker(ctx, c.shootQueue, "Shoot", c.reconcileShootKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.shootQueue, "Shoot", reconcile.Func(c.reconcileShootRequest), &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootCareWorkers; i++ {
-		controllerutils.CreateWorker(ctx, c.shootCareQueue, "Shoot Care", c.reconcileShootCareKey, &waitGroup, c.workerCh)
+		controllerutils.DeprecatedCreateWorker(ctx, c.shootCareQueue, "Shoot Care", c.reconcileShootCareKey, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootMaintenanceWorkers; i++ {
-		controllerutils.CreateWorker(ctx, c.shootMaintenanceQueue, "Shoot Maintenance", c.reconcileShootMaintenanceKey, &waitGroup, c.workerCh)
+		controllerutils.DeprecatedCreateWorker(ctx, c.shootMaintenanceQueue, "Shoot Maintenance", c.reconcileShootMaintenanceKey, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootQuotaWorkers; i++ {
-		controllerutils.CreateWorker(ctx, c.shootQuotaQueue, "Shoot Quota", c.reconcileShootQuotaKey, &waitGroup, c.workerCh)
+		controllerutils.DeprecatedCreateWorker(ctx, c.shootQuotaQueue, "Shoot Quota", c.reconcileShootQuotaKey, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootWorkers/2+1; i++ {
-		controllerutils.CreateWorker(ctx, c.shootSeedQueue, "Shooted Seeds", c.reconcileShootKey, &waitGroup, c.workerCh)
-		controllerutils.CreateWorker(ctx, c.seedQueue, "Seed Queue", c.reconcileSeedKey, &waitGroup, c.workerCh)
-		controllerutils.CreateWorker(ctx, c.controllerInstallationQueue, "ControllerInstallation Queue", c.reconcileControllerInstallationKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.shootSeedQueue, "Shooted Seeds", reconcile.Func(c.reconcileShootRequest), &waitGroup, c.workerCh)
+		controllerutils.DeprecatedCreateWorker(ctx, c.controllerInstallationQueue, "ControllerInstallation Queue", c.reconcileControllerInstallationKey, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootWorkers/5+1; i++ {
-		controllerutils.CreateWorker(ctx, c.configMapQueue, "ConfigMap", c.reconcileConfigMapKey, &waitGroup, c.workerCh)
+		controllerutils.DeprecatedCreateWorker(ctx, c.configMapQueue, "ConfigMap", c.reconcileConfigMapKey, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootHibernationWorkers; i++ {
-		controllerutils.CreateWorker(ctx, c.shootHibernationQueue, "Scheduled Shoot Hibernation", c.reconcileShootHibernationKey, &waitGroup, c.workerCh)
+		controllerutils.DeprecatedCreateWorker(ctx, c.shootHibernationQueue, "Scheduled Shoot Hibernation", c.reconcileShootHibernationKey, &waitGroup, c.workerCh)
 	}
 
 	// Shutdown handling
@@ -348,40 +324,4 @@ func (c *Controller) getShootQueue(obj interface{}) workqueue.RateLimitingInterf
 		return c.shootSeedQueue
 	}
 	return c.shootQueue
-}
-
-func (c *Controller) migrateMachineImageNames(shoot *gardenv1beta1.Shoot) error {
-	cloudProfile, err := c.k8sGardenInformers.Garden().V1beta1().CloudProfiles().Lister().Get(shoot.Spec.Cloud.Profile)
-	if err != nil {
-		return err
-	}
-	cloudProvider, err := helper.DetermineCloudProviderInShoot(shoot.Spec.Cloud)
-	if err != nil {
-		return err
-	}
-
-	machineImageName := helper.GetMachineImageNameFromShoot(cloudProvider, shoot)
-	// Only do the migration once
-	if machineImageName == gardenv1beta1.MachineImageCoreOS || machineImageName == gardenv1beta1.MachineImageCoreOSAlicloud {
-		return nil
-	}
-
-	machineImageFound, machineImage, err := helper.DetermineMachineImage(*cloudProfile, machineImageName, shoot.Spec.Cloud.Region)
-	if err != nil {
-		return err
-	}
-
-	if !machineImageFound {
-		return nil
-	}
-
-	if updateMachineImage := helper.UpdateMachineImage(cloudProvider, machineImage); updateMachineImage != nil {
-		_, err = kutil.TryUpdateShoot(c.k8sGardenClient.Garden(), retry.DefaultBackoff, shoot.ObjectMeta, func(s *gardenv1beta1.Shoot) (*gardenv1beta1.Shoot, error) {
-			updateMachineImage(&s.Spec.Cloud)
-			return s, nil
-		})
-		return err
-	}
-
-	return nil
 }

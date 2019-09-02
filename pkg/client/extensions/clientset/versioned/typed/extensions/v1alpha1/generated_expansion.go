@@ -2,4 +2,20 @@
 
 package v1alpha1
 
+type BackupBucketExpansion interface{}
+
+type BackupEntryExpansion interface{}
+
+type ClusterExpansion interface{}
+
+type ControlPlaneExpansion interface{}
+
+type ExtensionExpansion interface{}
+
+type InfrastructureExpansion interface{}
+
+type NetworkExpansion interface{}
+
 type OperatingSystemConfigExpansion interface{}
+
+type WorkerExpansion interface{}

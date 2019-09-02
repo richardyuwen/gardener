@@ -15,12 +15,11 @@
 package v1alpha1
 
 import (
-	// TODO: Should be k8s.io/component-base/config/v1alpha1 in the future.
-	apimachineryconfigv1alpha1 "k8s.io/apimachinery/pkg/apis/config/v1alpha1" // TODO: Should be k8s.io/component-base/config/v1alpha1 in the future.
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiserverconfigv1alpha1 "k8s.io/apiserver/pkg/apis/config/v1alpha1"
-	"k8s.io/klog"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	componentbaseconfigv1alpha1 "k8s.io/component-base/config/v1alpha1"
+	"k8s.io/klog"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -30,7 +29,7 @@ type ControllerManagerConfiguration struct {
 	metav1.TypeMeta `json:",inline"`
 	// ClientConnection specifies the kubeconfig file and client connection
 	// settings for the proxy server to use when communicating with the apiserver.
-	ClientConnection apimachineryconfigv1alpha1.ClientConnectionConfiguration `json:"clientConnection"`
+	ClientConnection componentbaseconfigv1alpha1.ClientConnectionConfiguration `json:"clientConnection"`
 	// Controllers defines the configuration of the controllers.
 	Controllers ControllerManagerControllerConfiguration `json:"controllers"`
 	// LeaderElection defines the configuration of leader election client.
@@ -56,6 +55,12 @@ type ControllerManagerConfiguration struct {
 
 // ControllerManagerControllerConfiguration defines the configuration of the controllers.
 type ControllerManagerControllerConfiguration struct {
+	// BackupBucket defines the configuration of the BackupBucket controller.
+	// +optional
+	BackupBucket *BackupBucketControllerConfiguration `json:"backupBucket"`
+	// BackupEntry defines the configuration of the BackupEntry controller.
+	// +optional
+	BackupEntry *BackupEntryControllerConfiguration `json:"backupEntry"`
 	// BackupInfrastructure defines the configuration of the BackupInfrastructure controller.
 	BackupInfrastructure BackupInfrastructureControllerConfiguration `json:"backupInfrastructure"`
 	// CloudProfile defines the configuration of the CloudProfile controller.
@@ -67,6 +72,9 @@ type ControllerManagerControllerConfiguration struct {
 	// ControllerInstallation defines the configuration of the ControllerInstallation controller.
 	// +optional
 	ControllerInstallation *ControllerInstallationControllerConfiguration `json:"controllerInstallation,omitempty"`
+	// Plant defines the configuration of the Plant controller.
+	// +optional
+	Plant *PlantConfiguration `json:"plant,omitempty"`
 	// SecretBinding defines the configuration of the SecretBinding controller.
 	// +optional
 	SecretBinding *SecretBindingControllerConfiguration `json:"secretBinding,omitempty"`
@@ -115,6 +123,16 @@ type ControllerInstallationControllerConfiguration struct {
 	ConcurrentSyncs int `json:"concurrentSyncs"`
 }
 
+// PlantConfiguration defines the configuration of the
+// PlantConfiguration controller.
+type PlantConfiguration struct {
+	// ConcurrentSyncs is the number of workers used for the controller to work on
+	// events.
+	ConcurrentSyncs int `json:"concurrentSyncs"`
+	// SyncPeriod is the duration how often the existing resources are reconciled.
+	SyncPeriod metav1.Duration `json:"syncPeriod"`
+}
+
 // SecretBindingControllerConfiguration defines the configuration of the
 // SecretBinding controller.
 type SecretBindingControllerConfiguration struct {
@@ -160,6 +178,10 @@ type ShootControllerConfiguration struct {
 	// ConcurrentSyncs is the number of workers used for the controller to work on
 	// events.
 	ConcurrentSyncs int `json:"concurrentSyncs"`
+	// ReconcileInMaintenanceOnly determines whether Shoot reconciliations happen only
+	// during its maintenance time window.
+	// +optional
+	ReconcileInMaintenanceOnly *bool `json:"reconcileInMaintenanceOnly,omitempty"`
 	// RespectSyncPeriodOverwrite determines whether a sync period overwrite of a
 	// Shoot (via annotation) is respected or not. Defaults to false.
 	// +optional
@@ -225,6 +247,24 @@ type ShootHibernationControllerConfiguration struct {
 	ConcurrentSyncs int `json:"concurrentSyncs"`
 }
 
+// BackupBucketControllerConfiguration defines the configuration of the BackupBucket
+// controller.
+type BackupBucketControllerConfiguration struct {
+	// ConcurrentSyncs is the number of workers used for the controller to work on events.
+	ConcurrentSyncs int `json:"concurrentSyncs"`
+}
+
+// BackupEntryControllerConfiguration defines the configuration of the BackupEntry
+// controller.
+type BackupEntryControllerConfiguration struct {
+	// ConcurrentSyncs is the number of workers used for the controller to work on events.
+	ConcurrentSyncs int `json:"concurrentSyncs"`
+	// DeletionGracePeriodHours holds the period in number of hours to delete the Backup Entry after deletion timestamp is set.
+	// If value is set to 0 then the BackupEntryController will trigger deletion immediately.
+	// +optional
+	DeletionGracePeriodHours *int `json:"deletionGracePeriodHours,omitempty"`
+}
+
 // BackupInfrastructureControllerConfiguration defines the configuration of the BackupInfrastructure
 // controller.
 type BackupInfrastructureControllerConfiguration struct {
@@ -232,10 +272,13 @@ type BackupInfrastructureControllerConfiguration struct {
 	ConcurrentSyncs int `json:"concurrentSyncs"`
 	// SyncPeriod is the duration how often the existing resources are reconciled.
 	SyncPeriod metav1.Duration `json:"syncPeriod"`
-	// DeletionGracePeriodDays holds the period in number of days to delete the Backup Infrastructure after deletion timestamp is set.
-	// If value is set to 0 then the BackupInfrastructureController will trigger deletion immediately..
+	// DeletionGracePeriodHours holds the period in number of hours to delete the Backup Infrastructure after deletion timestamp is set.
+	// If value is set to 0 then the BackupInfrastructureController will trigger deletion immediately.
 	// +optional
-	DeletionGracePeriodDays *int `json:"deletionGracePeriodDays,omitempty"`
+	DeletionGracePeriodHours *int `json:"deletionGracePeriodHours,omitempty"`
+	// DeletionGracePeriodHoursByPurpose holds various shoot purposes mapped to the respective deletion grace periods in hours for the backup infrastructure associated with the shoot
+	// +optional
+	DeletionGracePeriodHoursByPurpose map[string]int `json:"deletionGracePeriodHoursByPurpose,omitempty"`
 }
 
 // DiscoveryConfiguration defines the configuration of how to discover API groups.
@@ -257,7 +300,7 @@ type DiscoveryConfiguration struct {
 // LeaderElectionConfiguration defines the configuration of leader election
 // clients for components that can run with leader election enabled.
 type LeaderElectionConfiguration struct {
-	apiserverconfigv1alpha1.LeaderElectionConfiguration `json:",inline"`
+	componentbaseconfigv1alpha1.LeaderElectionConfiguration `json:",inline"`
 	// LockObjectNamespace defines the namespace of the lock object.
 	LockObjectNamespace string `json:"lockObjectNamespace"`
 	// LockObjectName defines the lock object name.
@@ -309,9 +352,9 @@ const (
 	// ControllerManagerDefaultLockObjectName is the default lock name for leader election.
 	ControllerManagerDefaultLockObjectName = "gardener-controller-manager-leader-election"
 
-	// DefaultBackupInfrastructureDeletionGracePeriodDays is a constant for the default number of days the Backup Infrastructure should be kept after shoot is deleted.
+	// DefaultBackupInfrastructureDeletionGracePeriodHours is a constant for the default number of hours the Backup Infrastructure should be kept after shoot is deleted.
 	// By default we set this to 0 so that then BackupInfrastructureController will trigger deletion immediately.
-	DefaultBackupInfrastructureDeletionGracePeriodDays = 0
+	DefaultBackupInfrastructureDeletionGracePeriodHours = 0
 
 	// DefaultETCDBackupSchedule is a constant for the default schedule to take backups of a Shoot cluster (daily).
 	DefaultETCDBackupSchedule = "0 */24 * * *"

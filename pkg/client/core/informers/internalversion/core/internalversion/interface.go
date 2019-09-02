@@ -8,10 +8,16 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// BackupBuckets returns a BackupBucketInformer.
+	BackupBuckets() BackupBucketInformer
+	// BackupEntries returns a BackupEntryInformer.
+	BackupEntries() BackupEntryInformer
 	// ControllerInstallations returns a ControllerInstallationInformer.
 	ControllerInstallations() ControllerInstallationInformer
 	// ControllerRegistrations returns a ControllerRegistrationInformer.
 	ControllerRegistrations() ControllerRegistrationInformer
+	// Plants returns a PlantInformer.
+	Plants() PlantInformer
 }
 
 type version struct {
@@ -25,6 +31,16 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
+// BackupBuckets returns a BackupBucketInformer.
+func (v *version) BackupBuckets() BackupBucketInformer {
+	return &backupBucketInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// BackupEntries returns a BackupEntryInformer.
+func (v *version) BackupEntries() BackupEntryInformer {
+	return &backupEntryInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
 // ControllerInstallations returns a ControllerInstallationInformer.
 func (v *version) ControllerInstallations() ControllerInstallationInformer {
 	return &controllerInstallationInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
@@ -33,4 +49,9 @@ func (v *version) ControllerInstallations() ControllerInstallationInformer {
 // ControllerRegistrations returns a ControllerRegistrationInformer.
 func (v *version) ControllerRegistrations() ControllerRegistrationInformer {
 	return &controllerRegistrationInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// Plants returns a PlantInformer.
+func (v *version) Plants() PlantInformer {
+	return &plantInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

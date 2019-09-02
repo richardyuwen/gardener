@@ -15,7 +15,12 @@
 package shoot
 
 import (
+	"time"
+
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
+	"github.com/gardener/gardener/pkg/operation/garden"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -27,27 +32,60 @@ type Shoot struct {
 	CloudProvider gardenv1beta1.CloudProvider
 
 	SeedNamespace               string
-	InternalClusterDomain       string
-	ExternalClusterDomain       *string
 	KubernetesMajorMinorVersion string
+
+	InternalClusterDomain string
+	ExternalClusterDomain *string
+	ExternalDomain        *garden.Domain
 
 	WantsClusterAutoscaler bool
 	WantsAlertmanager      bool
-	IsHibernated           bool
+	IgnoreAlerts           bool
+	HibernationEnabled     bool
 
-	CloudConfigMap map[string]CloudConfig
+	OperatingSystemConfigsMap map[string]OperatingSystemConfigs
+	Extensions                map[string]Extension
+	InfrastructureStatus      []byte
+	ControlPlaneStatus        []byte
+	MachineDeployments        []extensionsv1alpha1.MachineDeployment
 }
 
-// CloudConfig contains a downloader script as well as the original cloud config.
-type CloudConfig struct {
-	Downloader CloudConfigData
-	Original   CloudConfigData
+// OperatingSystemConfigs contains operating system configs for the downloader script as well as for the original cloud config.
+type OperatingSystemConfigs struct {
+	Downloader OperatingSystemConfig
+	Original   OperatingSystemConfig
 }
 
-// CloudConfigData contains the actual content, a command to load it and all units that
+// OperatingSystemConfig contains the operating system config's name and data.
+type OperatingSystemConfig struct {
+	Name string
+	Data OperatingSystemConfigData
+}
+
+// OperatingSystemConfigData contains the actual content, a command to load it and all units that
 // shall be considered for restart on change.
-type CloudConfigData struct {
+type OperatingSystemConfigData struct {
 	Content string
 	Command *string
 	Units   []string
+}
+
+// Extension contains information about the extension api resouce as well as configuration information.
+type Extension struct {
+	extensionsv1alpha1.Extension
+	Timeout time.Duration
+}
+
+// IncompleteDNSConfigError is a custom error type.
+type IncompleteDNSConfigError struct{}
+
+// Error prints the error message of the IncompleteDNSConfigError error.
+func (e *IncompleteDNSConfigError) Error() string {
+	return "unable to figure out which secret should be used for dns"
+}
+
+// IsIncompleteDNSConfigError returns true if the error indicates that not the DNS config is incomplete.
+func IsIncompleteDNSConfigError(err error) bool {
+	_, ok := err.(*IncompleteDNSConfigError)
+	return ok
 }

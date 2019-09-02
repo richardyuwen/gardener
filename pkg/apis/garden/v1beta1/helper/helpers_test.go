@@ -18,14 +18,13 @@ import (
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	. "github.com/gardener/gardener/pkg/apis/garden/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/operation/common"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/Masterminds/semver"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gstruct"
-	"github.com/onsi/gomega/types"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var (
@@ -34,19 +33,19 @@ var (
 )
 
 var _ = Describe("helper", func() {
-	DescribeTable("#IsShootHibernated",
+	DescribeTable("#HibernationIsEnabled",
 		func(shoot *gardenv1beta1.Shoot, hibernated bool) {
-			Expect(IsShootHibernated(shoot)).To(Equal(hibernated))
+			Expect(HibernationIsEnabled(shoot)).To(Equal(hibernated))
 		},
 		Entry("no hibernation section", &gardenv1beta1.Shoot{}, false),
 		Entry("hibernation.enabled = false", &gardenv1beta1.Shoot{
 			Spec: gardenv1beta1.ShootSpec{
-				Hibernation: &gardenv1beta1.Hibernation{Enabled: false},
+				Hibernation: &gardenv1beta1.Hibernation{Enabled: &falseVar},
 			},
 		}, false),
 		Entry("hibernation.enabled = true", &gardenv1beta1.Shoot{
 			Spec: gardenv1beta1.ShootSpec{
-				Hibernation: &gardenv1beta1.Hibernation{Enabled: true},
+				Hibernation: &gardenv1beta1.Hibernation{Enabled: &trueVar},
 			},
 		}, true),
 	)
@@ -103,15 +102,20 @@ var _ = Describe("helper", func() {
 				},
 			},
 			[]gardenv1beta1.Worker{{Name: "openStack"}}),
-		Entry("Local",
-			gardenv1beta1.CloudProviderLocal,
-			&gardenv1beta1.Shoot{},
-			[]gardenv1beta1.Worker{{Name: "local", AutoScalerMin: 1, AutoScalerMax: 1}}),
 	)
 
-	DescribeTable("#GetMachineImageNameFromShoot",
-		func(cloudProvider gardenv1beta1.CloudProvider, shoot *gardenv1beta1.Shoot, expected gardenv1beta1.MachineImageName) {
-			Expect(GetMachineImageNameFromShoot(cloudProvider, shoot)).To(Equal(expected))
+	var (
+		machineImageName    = "some-machineImage"
+		machineImageVersion = "some-version"
+		machineImage        = &gardenv1beta1.ShootMachineImage{
+			Name:    machineImageName,
+			Version: machineImageVersion,
+		}
+	)
+
+	DescribeTable("#GetDefaultMachineImageFromShoot",
+		func(cloudProvider gardenv1beta1.CloudProvider, shoot *gardenv1beta1.Shoot, expected *gardenv1beta1.ShootMachineImage) {
+			Expect(GetDefaultMachineImageFromShoot(cloudProvider, shoot)).To(Equal(expected))
 		},
 		Entry("AWS",
 			gardenv1beta1.CloudProviderAWS,
@@ -119,14 +123,12 @@ var _ = Describe("helper", func() {
 				Spec: gardenv1beta1.ShootSpec{
 					Cloud: gardenv1beta1.Cloud{
 						AWS: &gardenv1beta1.AWSCloud{
-							MachineImage: &gardenv1beta1.AWSMachineImage{
-								Name: gardenv1beta1.MachineImageName("some-machineimage"),
-							},
+							MachineImage: machineImage,
 						},
 					},
 				},
 			},
-			gardenv1beta1.MachineImageName("some-machineimage"),
+			machineImage,
 		),
 		Entry("Azure",
 			gardenv1beta1.CloudProviderAzure,
@@ -134,14 +136,12 @@ var _ = Describe("helper", func() {
 				Spec: gardenv1beta1.ShootSpec{
 					Cloud: gardenv1beta1.Cloud{
 						Azure: &gardenv1beta1.AzureCloud{
-							MachineImage: &gardenv1beta1.AzureMachineImage{
-								Name: gardenv1beta1.MachineImageName("some-machineimage"),
-							},
+							MachineImage: machineImage,
 						},
 					},
 				},
 			},
-			gardenv1beta1.MachineImageName("some-machineimage"),
+			machineImage,
 		),
 		Entry("GCP",
 			gardenv1beta1.CloudProviderGCP,
@@ -149,14 +149,12 @@ var _ = Describe("helper", func() {
 				Spec: gardenv1beta1.ShootSpec{
 					Cloud: gardenv1beta1.Cloud{
 						GCP: &gardenv1beta1.GCPCloud{
-							MachineImage: &gardenv1beta1.GCPMachineImage{
-								Name: gardenv1beta1.MachineImageName("some-machineimage"),
-							},
+							MachineImage: machineImage,
 						},
 					},
 				},
 			},
-			gardenv1beta1.MachineImageName("some-machineimage"),
+			machineImage,
 		),
 		Entry("OpenStack",
 			gardenv1beta1.CloudProviderOpenStack,
@@ -164,14 +162,12 @@ var _ = Describe("helper", func() {
 				Spec: gardenv1beta1.ShootSpec{
 					Cloud: gardenv1beta1.Cloud{
 						OpenStack: &gardenv1beta1.OpenStackCloud{
-							MachineImage: &gardenv1beta1.OpenStackMachineImage{
-								Name: gardenv1beta1.MachineImageName("some-machineimage"),
-							},
+							MachineImage: machineImage,
 						},
 					},
 				},
 			},
-			gardenv1beta1.MachineImageName("some-machineimage"),
+			machineImage,
 		),
 		Entry("Alicloud",
 			gardenv1beta1.CloudProviderAlicloud,
@@ -179,25 +175,249 @@ var _ = Describe("helper", func() {
 				Spec: gardenv1beta1.ShootSpec{
 					Cloud: gardenv1beta1.Cloud{
 						Alicloud: &gardenv1beta1.Alicloud{
-							MachineImage: &gardenv1beta1.AlicloudMachineImage{
-								Name: gardenv1beta1.MachineImageName("some-machineimage"),
-							},
+							MachineImage: machineImage,
 						},
 					},
 				},
 			},
-			gardenv1beta1.MachineImageName("some-machineimage"),
+			machineImage,
 		),
-		Entry("Local",
-			gardenv1beta1.CloudProviderLocal,
+		Entry("Packet",
+			gardenv1beta1.CloudProviderPacket,
 			&gardenv1beta1.Shoot{
 				Spec: gardenv1beta1.ShootSpec{
 					Cloud: gardenv1beta1.Cloud{
-						Local:&gardenv1beta1.Local{},
+						Packet: &gardenv1beta1.PacketCloud{
+							MachineImage: machineImage,
+						},
 					},
 				},
 			},
-			gardenv1beta1.MachineImageName("coreos"),
+			machineImage,
+		),
+	)
+
+	var (
+		kubernetesConstraint = gardenv1beta1.KubernetesConstraints{
+			OfferedVersions: []gardenv1beta1.KubernetesVersion{
+				{Version: "1.15.1"},
+				{Version: "1.14.4"},
+				{Version: "1.12.9"},
+			},
+		}
+	)
+
+	DescribeTable("#DetermineLatestKubernetesPatchVersion",
+		func(cloudProfile gardenv1beta1.CloudProfile, currentVersion, expectedVersion string, expectVersion bool) {
+			ok, newVersion, err := DetermineLatestKubernetesPatchVersion(cloudProfile, currentVersion)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(Equal(expectVersion))
+			Expect(newVersion).To(Equal(expectedVersion))
+		},
+		Entry("version = 1.15.1",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					AWS: &gardenv1beta1.AWSProfile{
+						Constraints: gardenv1beta1.AWSConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.15.0",
+			"1.15.1",
+			true,
+		),
+		Entry("version = 1.12.9",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					AWS: &gardenv1beta1.AWSProfile{
+						Constraints: gardenv1beta1.AWSConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.4",
+			"1.12.9",
+			true,
+		),
+		Entry("no new version",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					AWS: &gardenv1beta1.AWSProfile{
+						Constraints: gardenv1beta1.AWSConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.15.1",
+			"",
+			false,
+		),
+		Entry("GCP",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					GCP: &gardenv1beta1.GCPProfile{
+						Constraints: gardenv1beta1.GCPConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.4",
+			"1.12.9",
+			true,
+		),
+		Entry("Azure",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					Azure: &gardenv1beta1.AzureProfile{
+						Constraints: gardenv1beta1.AzureConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.4",
+			"1.12.9",
+			true,
+		),
+		Entry("Openstack",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					OpenStack: &gardenv1beta1.OpenStackProfile{
+						Constraints: gardenv1beta1.OpenStackConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.4",
+			"1.12.9",
+			true,
+		),
+		Entry("Packet",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					Packet: &gardenv1beta1.PacketProfile{
+						Constraints: gardenv1beta1.PacketConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.4",
+			"1.12.9",
+			true,
+		),
+	)
+
+	DescribeTable("#DetermineNextKubernetesMinorVersion",
+		func(cloudProfile gardenv1beta1.CloudProfile, currentVersion, expectedVersion string, expectVersion bool) {
+			ok, newVersion, err := DetermineNextKubernetesMinorVersion(cloudProfile, currentVersion)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(Equal(expectVersion))
+			Expect(newVersion).To(Equal(expectedVersion))
+		},
+		Entry("version = 1.15.1",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					AWS: &gardenv1beta1.AWSProfile{
+						Constraints: gardenv1beta1.AWSConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.14.4",
+			"1.15.1",
+			true,
+		),
+		Entry("version = 1.12.9",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					AWS: &gardenv1beta1.AWSProfile{
+						Constraints: gardenv1beta1.AWSConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.11.0",
+			"1.12.9",
+			true,
+		),
+		Entry("no new version",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					AWS: &gardenv1beta1.AWSProfile{
+						Constraints: gardenv1beta1.AWSConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.15.1",
+			"",
+			false,
+		),
+		Entry("GCP",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					GCP: &gardenv1beta1.GCPProfile{
+						Constraints: gardenv1beta1.GCPConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.9",
+			"1.14.4",
+			true,
+		),
+		Entry("Azure",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					Azure: &gardenv1beta1.AzureProfile{
+						Constraints: gardenv1beta1.AzureConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.9",
+			"1.14.4",
+			true,
+		),
+		Entry("Openstack",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					OpenStack: &gardenv1beta1.OpenStackProfile{
+						Constraints: gardenv1beta1.OpenStackConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.9",
+			"1.14.4",
+			true,
+		),
+		Entry("Packet",
+			gardenv1beta1.CloudProfile{
+				Spec: gardenv1beta1.CloudProfileSpec{
+					Packet: &gardenv1beta1.PacketProfile{
+						Constraints: gardenv1beta1.PacketConstraints{
+							Kubernetes: kubernetesConstraint,
+						},
+					},
+				},
+			},
+			"1.12.9",
+			"1.14.4",
+			true,
 		),
 	)
 
@@ -241,10 +461,28 @@ var _ = Describe("helper", func() {
 			true))
 
 	var (
+		trueVar  = true
+		falseVar = false
+	)
+
+	DescribeTable("#ShootWantsBasicAuthentication",
+		func(shoot *gardenv1beta1.Shoot, wantsBasicAuth bool) {
+			actualWantsBasicAuth := ShootWantsBasicAuthentication(shoot)
+
+			Expect(actualWantsBasicAuth).To(Equal(wantsBasicAuth))
+		},
+		Entry("no kubeapiserver configuration", &gardenv1beta1.Shoot{}, true),
+		Entry("field not set", &gardenv1beta1.Shoot{Spec: gardenv1beta1.ShootSpec{Kubernetes: gardenv1beta1.Kubernetes{KubeAPIServer: &gardenv1beta1.KubeAPIServerConfig{}}}}, true),
+		Entry("explicitly enabled", &gardenv1beta1.Shoot{Spec: gardenv1beta1.ShootSpec{Kubernetes: gardenv1beta1.Kubernetes{KubeAPIServer: &gardenv1beta1.KubeAPIServerConfig{EnableBasicAuthentication: &trueVar}}}}, true),
+		Entry("explicitly disabled", &gardenv1beta1.Shoot{Spec: gardenv1beta1.ShootSpec{Kubernetes: gardenv1beta1.Kubernetes{KubeAPIServer: &gardenv1beta1.KubeAPIServerConfig{EnableBasicAuthentication: &falseVar}}}}, false),
+	)
+
+	var (
 		alertingSecrets = map[string]*corev1.Secret{
-			common.GardenRoleAlertingSMTP: &corev1.Secret{},
+			common.GardenRoleAlertingSMTP: {},
 		}
 	)
+
 	DescribeTable("#ShootWantsAlertmanager",
 		func(shoot *gardenv1beta1.Shoot, secrets map[string]*corev1.Secret, wantsAlertmanager bool) {
 			actualWantsAlertmanager := ShootWantsAlertmanager(shoot, secrets)
@@ -271,95 +509,6 @@ var _ = Describe("helper", func() {
 			},
 		}, alertingSecrets, false))
 
-	var zeroTime metav1.Time
-
-	DescribeTable("#UpdatedCondition",
-		func(condition *gardenv1beta1.Condition, status gardenv1beta1.ConditionStatus, reason, message string, matcher types.GomegaMatcher) {
-			updated := UpdatedCondition(condition, status, reason, message)
-
-			Expect(updated).To(matcher)
-		},
-		Entry("no update",
-			&gardenv1beta1.Condition{
-				Status:  gardenv1beta1.ConditionTrue,
-				Reason:  "reason",
-				Message: "message",
-			},
-			gardenv1beta1.ConditionTrue,
-			"reason",
-			"message",
-			PointTo(MatchFields(IgnoreExtras, Fields{
-				"Status":             Equal(gardenv1beta1.ConditionTrue),
-				"Reason":             Equal("reason"),
-				"Message":            Equal("message"),
-				"LastTransitionTime": Equal(zeroTime),
-				"LastUpdateTime":     Not(Equal(zeroTime)),
-			})),
-		),
-		Entry("update reason",
-			&gardenv1beta1.Condition{
-				Status:  gardenv1beta1.ConditionTrue,
-				Reason:  "reason",
-				Message: "message",
-			},
-			gardenv1beta1.ConditionTrue,
-			"OtherReason",
-			"message",
-			PointTo(MatchFields(IgnoreExtras, Fields{
-				"Status":             Equal(gardenv1beta1.ConditionTrue),
-				"Reason":             Equal("OtherReason"),
-				"Message":            Equal("message"),
-				"LastTransitionTime": Equal(zeroTime),
-				"LastUpdateTime":     Not(Equal(zeroTime)),
-			})),
-		),
-		Entry("update status",
-			&gardenv1beta1.Condition{
-				Status:  gardenv1beta1.ConditionTrue,
-				Reason:  "reason",
-				Message: "message",
-			},
-			gardenv1beta1.ConditionFalse,
-			"OtherReason",
-			"message",
-			PointTo(MatchFields(IgnoreExtras, Fields{
-				"Status":             Equal(gardenv1beta1.ConditionFalse),
-				"Reason":             Equal("OtherReason"),
-				"Message":            Equal("message"),
-				"LastTransitionTime": Not(Equal(zeroTime)),
-				"LastUpdateTime":     Not(Equal(zeroTime)),
-			})),
-		),
-	)
-
-	Describe("#GetCondition", func() {
-		It("should return the found condition", func() {
-			var (
-				conditionType gardenv1beta1.ConditionType = "test-1"
-				condition                                 = gardenv1beta1.Condition{
-					Type: conditionType,
-				}
-				conditions = []gardenv1beta1.Condition{condition}
-			)
-
-			cond := GetCondition(conditions, conditionType)
-
-			Expect(cond).NotTo(BeNil())
-			Expect(*cond).To(Equal(condition))
-		})
-
-		It("should return nil because the required condition could not be found", func() {
-			var (
-				conditionType gardenv1beta1.ConditionType = "test-1"
-				conditions                                = []gardenv1beta1.Condition{}
-			)
-
-			cond := GetCondition(conditions, conditionType)
-
-			Expect(cond).To(BeNil())
-		})
-	})
-
 	Describe("#ReadShootedSeed", func() {
 		var (
 			shoot                    *gardenv1beta1.Shoot
@@ -380,6 +529,7 @@ var _ = Describe("helper", func() {
 
 			defaultShootedSeed = ShootedSeed{
 				APIServer: &defaultAPIServer,
+				Backup:    &gardenv1beta1.BackupProfile{},
 			}
 		)
 
@@ -442,6 +592,7 @@ var _ = Describe("helper", func() {
 				Protected: &trueVar,
 				Visible:   &trueVar,
 				APIServer: &defaultAPIServer,
+				Backup:    &gardenv1beta1.BackupProfile{},
 			}))
 		})
 
@@ -457,6 +608,7 @@ var _ = Describe("helper", func() {
 				Protected:         &falseVar,
 				Visible:           &falseVar,
 				APIServer:         &defaultAPIServer,
+				Backup:            &gardenv1beta1.BackupProfile{},
 				MinimumVolumeSize: nil,
 			}))
 		})
@@ -473,6 +625,7 @@ var _ = Describe("helper", func() {
 				Protected:         &falseVar,
 				Visible:           &falseVar,
 				APIServer:         &defaultAPIServer,
+				Backup:            &gardenv1beta1.BackupProfile{},
 				MinimumVolumeSize: &defaultMinimumVolumeSize,
 			}))
 		})
@@ -499,6 +652,7 @@ var _ = Describe("helper", func() {
 						MaxReplicas: three,
 					},
 				},
+				Backup: &gardenv1beta1.BackupProfile{},
 			}))
 		})
 
@@ -545,6 +699,106 @@ var _ = Describe("helper", func() {
 
 			_, err := ReadShootedSeed(shoot)
 			Expect(err).To(HaveOccurred())
+		})
+	})
+	Describe("#GetShootMachineImageFromLatestMachineImageVersion", func() {
+		It("should return the Machine Image containing only the latest machine image version", func() {
+			latestVersion := "1.0.0"
+			inputImage := gardenv1beta1.MachineImage{
+				Name: "coreos",
+				Versions: []gardenv1beta1.MachineImageVersion{
+					{
+						Version: "0.0.2",
+					},
+					{
+						Version: latestVersion,
+					},
+					{
+						Version: "0.0.2",
+					},
+				},
+			}
+
+			version, image, err := GetShootMachineImageFromLatestMachineImageVersion(inputImage)
+			Expect(err).NotTo(HaveOccurred())
+
+			latestSemverVersion, _ := semver.NewVersion(latestVersion)
+			Expect(version).To(Equal(latestSemverVersion))
+			Expect(image.Name).To(Equal("coreos"))
+			Expect(image.Version).To(Equal(latestVersion))
+		})
+
+		It("should return the Machine Image", func() {
+			latestVersion := "1.1"
+			inputImage := gardenv1beta1.MachineImage{
+				Name: "coreos",
+				Versions: []gardenv1beta1.MachineImageVersion{
+					{
+						Version: latestVersion,
+					},
+				},
+			}
+
+			version, image, err := GetShootMachineImageFromLatestMachineImageVersion(inputImage)
+			Expect(err).NotTo(HaveOccurred())
+
+			latestSemverVersion, err := semver.NewVersion(latestVersion)
+			Expect(version).To(Equal(latestSemverVersion))
+			Expect(image.Version).To(Equal(latestVersion))
+		})
+
+		It("should return an error for invalid semVerVersion", func() {
+			inputImage := gardenv1beta1.MachineImage{
+				Name: "coreos",
+				Versions: []gardenv1beta1.MachineImageVersion{
+					{
+						Version: "0.0.XX",
+					},
+				},
+			}
+
+			_, _, err := GetShootMachineImageFromLatestMachineImageVersion(inputImage)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("#ShootMachineImageVersionExists", func() {
+		var (
+			constraint        gardenv1beta1.MachineImage
+			shootMachineImage gardenv1beta1.ShootMachineImage
+		)
+		BeforeEach(func() {
+			constraint = gardenv1beta1.MachineImage{
+				Name: "coreos",
+				Versions: []gardenv1beta1.MachineImageVersion{
+					{
+						Version: "0.0.2",
+					},
+					{
+						Version: "0.0.3",
+					},
+				},
+			}
+
+			shootMachineImage = gardenv1beta1.ShootMachineImage{
+				Name:    "coreos",
+				Version: "0.0.2",
+			}
+		})
+		It("should determine that the version exists", func() {
+			exists, index := ShootMachineImageVersionExists(constraint, shootMachineImage)
+			Expect(exists).To(Equal(trueVar))
+			Expect(index).To(Equal(0))
+		})
+		It("should determine that the version does not exist", func() {
+			shootMachineImage.Name = "xy"
+			exists, _ := ShootMachineImageVersionExists(constraint, shootMachineImage)
+			Expect(exists).To(Equal(false))
+		})
+		It("should determine that the version does not exist", func() {
+			shootMachineImage.Version = "0.0.4"
+			exists, _ := ShootMachineImageVersionExists(constraint, shootMachineImage)
+			Expect(exists).To(Equal(false))
 		})
 	})
 })

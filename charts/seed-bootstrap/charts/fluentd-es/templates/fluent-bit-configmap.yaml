@@ -12,6 +12,9 @@ data:
         Daemon          Off
         Log_Level       info
         Parsers_File    parsers.conf
+        HTTP_Server     On
+        HTTP_Listen     0.0.0.0
+        HTTP_PORT       {{ .Values.fluentbit.ports.metrics }}
 
     @INCLUDE input-kubernetes.conf
     @INCLUDE input-systemd.conf
@@ -26,6 +29,7 @@ data:
         Exclude_Path      *_garden_fluent-bit-*.log,*_garden_fluentd-es-*.log
         Parser            docker
         DB                /var/log/flb_kube.db
+        Skip_Long_Lines   On
         Mem_Buf_Limit     12MB
         Refresh_Interval  10
         Ignore_Older      1800s
@@ -77,13 +81,6 @@ data:
     [FILTER]
         Name                parser
         Match               kubernetes.kube-controller-manager*kube-controller-manager*
-        Key_Name            log
-        Parser              kubeapiserverParser
-        Reserve_Data        True
-
-    [FILTER]
-        Name                parser
-        Match               kubernetes.cloud-controller-manager*cloud-controller-manager*
         Key_Name            log
         Parser              kubeapiserverParser
         Reserve_Data        True
@@ -174,13 +171,6 @@ data:
 
     [FILTER]
         Name                parser
-        Match               kubernetes.machine-controller-manager*machine-controller-manager*
-        Key_Name            log
-        Parser              kubeapiserverParser
-        Reserve_Data        True
-
-    [FILTER]
-        Name                parser
         Match               kubernetes.vpn-shoot*vpn-shoot*
         Key_Name            log
         Parser              vpnshootParser
@@ -224,13 +214,6 @@ data:
 
     [FILTER]
         Name                parser
-        Match               kubernetes.*lb-readvertiser*lb-readvertiser*
-        Key_Name            log
-        Parser              lbReadvertiserParser
-        Reserve_Data        True
-
-    [FILTER]
-        Name                parser
         Match               kubernetes.daily-curator*curator*
         Key_Name            log
         Parser              curatorParser
@@ -245,7 +228,7 @@ data:
 
     [FILTER]
         Name                parser
-        Match               kubernetes.kube-addon-manager*kube-addon-manager*
+        Match               kubernetes.gardener-resource-manager*gardener-resource-manager*
         Key_Name            log
         Parser              addonmanagerParser
         Reserve_Data        True
@@ -260,10 +243,34 @@ data:
         tls.verify          Off
 
     [FILTER]
+        Name record_modifier
+        Match *
+        Record type admin
+
+    [FILTER]
+        Name record_modifier
+        Match *kube-apiserver*
+        Record type user
+
+    [FILTER]
+        Name record_modifier
+        Match *kube-controller-manager*
+        Record type user
+
+    [FILTER]
+        Name record_modifier
+        Match *cloud-controller-manager*
+        Record type user
+
+    [FILTER]
         Name                lua
         Match               kubernetes.*
         script              modify_severity.lua
         call                cb_modify
+
+{{ if .Values.fluentbit.extensions.filters }}
+{{- toString .Values.fluentbit.extensions.filters | indent 4 }}
+{{- end }}
 
   output-fluentd.conf: |
     [OUTPUT]
@@ -361,13 +368,6 @@ data:
         Time_Format %Y-%m-%dT%H:%M:%S.%L
 
     [PARSER]
-        Name        lbReadvertiserParser
-        Format      regex
-        Regex       ^time="(?<time>\d{4}-\d{2}-\d{2}T[^"]*)"\s+level=(?<severity>\w+)\smsg="(?<log>.*)"
-        Time_Key    time
-        Time_Format %Y-%m-%dT%H:%M:%S%Z
-
-    [PARSER]
         Name        grafanaParser
         Format      regex
         Regex       ^t=(?<time>\d{4}-\d{2}-\d{2}T[^ ]*)\s+lvl=(?<severity>\w+)\smsg="(?<log>.*)"\s+logger=(?<source>.*)
@@ -378,6 +378,10 @@ data:
         Name        addonmanagerParser
         Format      regex
         Regex       ^(?<severity>[A-Z]+):\s(?<log>.*)
+
+{{ if .Values.fluentbit.extensions.parsers }}
+{{- toString .Values.fluentbit.extensions.parsers | indent 4 }}
+{{- end }}
 
   modify_severity.lua: |-
     function cb_modify(tag, timestamp, record)

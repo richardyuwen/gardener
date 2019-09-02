@@ -32,15 +32,18 @@ import (
 	"github.com/gardener/gardener/pkg/openapi"
 	"github.com/gardener/gardener/pkg/version"
 	controllerregistrationresources "github.com/gardener/gardener/plugin/pkg/controllerregistration/resources"
+	plantvalidator "github.com/gardener/gardener/plugin/pkg/plant"
+
 	"github.com/gardener/gardener/plugin/pkg/global/deletionconfirmation"
 	"github.com/gardener/gardener/plugin/pkg/global/resourcereferencemanager"
-	shootdnshostedzone "github.com/gardener/gardener/plugin/pkg/shoot/dnshostedzone"
+	shootdns "github.com/gardener/gardener/plugin/pkg/shoot/dns"
 	shootquotavalidator "github.com/gardener/gardener/plugin/pkg/shoot/quotavalidator"
-	shootseedmanager "github.com/gardener/gardener/plugin/pkg/shoot/seedmanager"
 	shootvalidator "github.com/gardener/gardener/plugin/pkg/shoot/validator"
 
 	"github.com/spf13/cobra"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apiserver/pkg/admission"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
@@ -79,7 +82,7 @@ These so-called control plane components are hosted in Kubernetes clusters thems
 	}
 
 	flags := cmd.Flags()
-	utilfeature.DefaultFeatureGate.AddFlag(flags)
+	utilfeature.DefaultMutableFeatureGate.AddFlag(flags)
 	opts.Recommended.AddFlags(flags)
 	return cmd
 }
@@ -96,11 +99,13 @@ type Options struct {
 
 // NewOptions returns a new Options object.
 func NewOptions(out, errOut io.Writer) *Options {
-	return &Options{
+	o := &Options{
 		Recommended: genericoptions.NewRecommendedOptions(fmt.Sprintf("/registry/%s", garden.GroupName), api.Codecs.LegacyCodec(gardencorev1alpha1.SchemeGroupVersion, gardenv1beta1.SchemeGroupVersion), genericoptions.NewProcessInfo("gardener-apiserver", "garden")),
 		StdOut:      out,
 		StdErr:      errOut,
 	}
+	o.Recommended.Etcd.StorageConfig.EncodeVersioner = runtime.NewMultiGroupVersioner(gardenv1beta1.SchemeGroupVersion, schema.GroupKind{Group: gardenv1beta1.GroupName})
+	return o
 }
 
 // validate validates all the required options.
@@ -122,18 +127,18 @@ func (o *Options) complete() error {
 	resourcereferencemanager.Register(o.Recommended.Admission.Plugins)
 	deletionconfirmation.Register(o.Recommended.Admission.Plugins)
 	shootquotavalidator.Register(o.Recommended.Admission.Plugins)
-	shootseedmanager.Register(o.Recommended.Admission.Plugins)
-	shootdnshostedzone.Register(o.Recommended.Admission.Plugins)
+	shootdns.Register(o.Recommended.Admission.Plugins)
 	shootvalidator.Register(o.Recommended.Admission.Plugins)
 	controllerregistrationresources.Register(o.Recommended.Admission.Plugins)
+	plantvalidator.Register(o.Recommended.Admission.Plugins)
 
 	allOrderedPlugins := []string{
 		resourcereferencemanager.PluginName,
-		shootdnshostedzone.PluginName,
+		shootdns.PluginName,
 		shootquotavalidator.PluginName,
-		shootseedmanager.PluginName,
 		shootvalidator.PluginName,
 		controllerregistrationresources.PluginName,
+		plantvalidator.PluginName,
 		deletionconfirmation.PluginName,
 	}
 
@@ -197,10 +202,9 @@ func (o *Options) config() (*apiserver.Config, error) {
 	gardenerAPIServerConfig.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(openapi.GetOpenAPIDefinitions, openapinamer.NewDefinitionNamer(api.Scheme))
 	gardenerAPIServerConfig.OpenAPIConfig.Info.Title = "Gardener"
 	gardenerAPIServerConfig.OpenAPIConfig.Info.Version = gardenerVersion.GitVersion
-	gardenerAPIServerConfig.SwaggerConfig = genericapiserver.DefaultSwaggerConfig()
 	gardenerAPIServerConfig.Version = &gardenerVersion
 
-	if err := o.Recommended.ApplyTo(gardenerAPIServerConfig, api.Scheme); err != nil {
+	if err := o.Recommended.ApplyTo(gardenerAPIServerConfig); err != nil {
 		return nil, err
 	}
 

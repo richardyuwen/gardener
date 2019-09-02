@@ -18,8 +18,18 @@ import (
 	"github.com/gardener/gardener/pkg/api"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
+	backupbucketstore "github.com/gardener/gardener/pkg/registry/core/backupbucket/storage"
+	backupentrystore "github.com/gardener/gardener/pkg/registry/core/backupentry/storage"
 	controllerinstallationstore "github.com/gardener/gardener/pkg/registry/core/controllerinstallation/storage"
 	controllerregistrationstore "github.com/gardener/gardener/pkg/registry/core/controllerregistration/storage"
+	plantstore "github.com/gardener/gardener/pkg/registry/core/plant/storage"
+
+	// garden storage for migration
+	cloudprofilestore "github.com/gardener/gardener/pkg/registry/garden/cloudprofile/storage"
+	projectstore "github.com/gardener/gardener/pkg/registry/garden/project/storage"
+	quotastore "github.com/gardener/gardener/pkg/registry/garden/quota/storage"
+	secretbindingstore "github.com/gardener/gardener/pkg/registry/garden/secretbinding/storage"
+	seedstore "github.com/gardener/gardener/pkg/registry/garden/seed/storage"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/registry/generic"
@@ -45,12 +55,39 @@ func (p StorageProvider) GroupName() string {
 func (p StorageProvider) v1alpha1Storage(restOptionsGetter generic.RESTOptionsGetter) map[string]rest.Storage {
 	storage := map[string]rest.Storage{}
 
+	backupBucketStorage := backupbucketstore.NewStorage(restOptionsGetter)
+	storage["backupbuckets"] = backupBucketStorage.BackupBucket
+	storage["backupbuckets/status"] = backupBucketStorage.Status
+
+	backupEntryStorage := backupentrystore.NewStorage(restOptionsGetter)
+	storage["backupentries"] = backupEntryStorage.BackupEntry
+	storage["backupentries/status"] = backupEntryStorage.Status
+
 	controllerRegistrationStorage := controllerregistrationstore.NewStorage(restOptionsGetter)
 	storage["controllerregistrations"] = controllerRegistrationStorage.ControllerRegistration
 
 	controllerInstallationStorage := controllerinstallationstore.NewStorage(restOptionsGetter)
 	storage["controllerinstallations"] = controllerInstallationStorage.ControllerInstallation
 	storage["controllerinstallations/status"] = controllerInstallationStorage.Status
+
+	plantStorage := plantstore.NewStorage(restOptionsGetter)
+	storage["plants"] = plantStorage.Plant
+	storage["plants/status"] = plantStorage.Status
+
+	projectStorage := projectstore.NewStorage(restOptionsGetter)
+	storage["projects"] = projectStorage.Project
+	storage["projects/status"] = projectStorage.Status
+
+	quotaStorage := quotastore.NewStorage(restOptionsGetter)
+	storage["quotas"] = quotaStorage.Quota
+
+	cloudprofileStorage := cloudprofilestore.NewStorage(restOptionsGetter)
+	seedStorage := seedstore.NewStorage(restOptionsGetter, cloudprofileStorage.CloudProfile)
+	storage["seeds"] = seedStorage.Seed
+	storage["seeds/status"] = seedStorage.Status
+
+	secretBindingStorage := secretbindingstore.NewStorage(restOptionsGetter)
+	storage["secretbindings"] = secretBindingStorage.SecretBinding
 
 	return storage
 }

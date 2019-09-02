@@ -1,0 +1,4 @@
+podAnnotations: {}
+replicas: 1
+images:
+  dependency-watchdog: image-repository:image-tag

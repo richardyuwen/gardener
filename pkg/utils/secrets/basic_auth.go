@@ -20,6 +20,8 @@ import (
 
 	"github.com/gardener/gardener/pkg/utils"
 	"k8s.io/apiserver/pkg/authentication/user"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type formatType string
@@ -33,6 +35,12 @@ const (
 
 	// DataKeyCSV is the key in a secret data holding the CSV format of a secret.
 	DataKeyCSV = "basic_auth.csv"
+	// DataKeyUserName is the key in a secret data holding the username.
+	DataKeyUserName = "username"
+	// DataKeyPassword is the key in a secret data holding the password.
+	DataKeyPassword = "password"
+	// DataKeyPasswordBcryptHash is the key in a secret data holding the bcrypt hash of the password.
+	DataKeyPasswordBcryptHash = "bcryptPasswordHash"
 )
 
 // BasicAuthSecretConfig contains the specification a to-be-generated basic authentication secret.
@@ -40,18 +48,19 @@ type BasicAuthSecretConfig struct {
 	Name   string
 	Format formatType
 
-	Username       string
-	PasswordLength int
+	Username                  string
+	PasswordLength            int
+	BcryptPasswordHashRequest bool
 }
 
-// BasicAuth contains the username, the password and the format for serializing the basic authentication
-// secret.
+// BasicAuth contains the username, the password, optionally hash of the password and the format for serializing the basic authentication
 type BasicAuth struct {
 	Name   string
 	Format formatType
 
-	Username string
-	Password string
+	Username           string
+	Password           string
+	BcryptPasswordHash string
 }
 
 // GetName returns the name of the secret.
@@ -59,21 +68,37 @@ func (s *BasicAuthSecretConfig) GetName() string {
 	return s.Name
 }
 
-// Generate computes a username/password keypair. It uses "admin" as username and generates a
-// random password of length 32.
+// Generate implements ConfigInterface.
 func (s *BasicAuthSecretConfig) Generate() (Interface, error) {
+	return s.GenerateBasicAuth()
+}
+
+// GenerateBasicAuth computes a username,password and the hash of the password keypair. It uses "admin" as username and generates a
+// random password of length 32.
+func (s *BasicAuthSecretConfig) GenerateBasicAuth() (*BasicAuth, error) {
 	password, err := utils.GenerateRandomString(s.PasswordLength)
 	if err != nil {
 		return nil, err
 	}
 
-	return &BasicAuth{
+	basicAuth := &BasicAuth{
 		Name:   s.Name,
 		Format: s.Format,
 
 		Username: s.Username,
 		Password: password,
-	}, nil
+	}
+
+	if s.BcryptPasswordHashRequest != false {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), 16)
+		if err != nil {
+			return nil, err
+		}
+
+		basicAuth.BcryptPasswordHash = string(hashedPassword)
+	}
+
+	return basicAuth, nil
 }
 
 // SecretData computes the data map which can be used in a Kubernetes secret.
@@ -82,8 +107,13 @@ func (b *BasicAuth) SecretData() map[string][]byte {
 
 	switch b.Format {
 	case BasicAuthFormatNormal:
-		data["username"] = []byte(b.Username)
-		data["password"] = []byte(b.Password)
+		data[DataKeyUserName] = []byte(b.Username)
+		data[DataKeyPassword] = []byte(b.Password)
+
+		if b.BcryptPasswordHash != "" {
+			data[DataKeyPasswordBcryptHash] = []byte(b.BcryptPasswordHash)
+		}
+
 		fallthrough
 
 	case BasicAuthFormatCSV:

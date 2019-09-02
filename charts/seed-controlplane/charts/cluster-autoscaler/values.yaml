@@ -13,3 +13,10 @@ workerPools:
   max: 3
 
 metricsPort: 8085
+
+scaleDownUnneededTime: 30m0s
+scaleDownDelayAfterAdd: 1h0m0s
+# scaleDownUtilizationThreshold: foo
+# scaleDownDelayAfterFailure: foo
+# scaleDownDelayAfterDelete: foo
+# scanInterval: foo

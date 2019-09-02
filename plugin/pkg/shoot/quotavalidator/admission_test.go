@@ -22,6 +22,7 @@ import (
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/operation/common"
 	. "github.com/gardener/gardener/plugin/pkg/shoot/quotavalidator"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -63,9 +64,9 @@ var _ = Describe("quotavalidator", func() {
 						},
 					},
 					Kubernetes: garden.KubernetesConstraints{
-						Versions: []string{
-							"1.0.1",
-							"1.1.1",
+						OfferedVersions: []garden.KubernetesVersion{
+							{Version: "1.0.1"},
+							{Version: "1.1.1"},
 						},
 					},
 				},
@@ -88,7 +89,10 @@ var _ = Describe("quotavalidator", func() {
 				},
 				Spec: garden.QuotaSpec{
 					ClusterLifetimeDays: &quotaProjectLifetime,
-					Scope:               garden.QuotaScopeProject,
+					Scope: corev1.ObjectReference{
+						APIVersion: "core.gardener.cloud/v1alpha1",
+						Kind:       "Project",
+					},
 					Metrics: corev1.ResourceList{
 						garden.QuotaMetricCPU:             resource.MustParse("2"),
 						garden.QuotaMetricGPU:             resource.MustParse("0"),
@@ -108,7 +112,10 @@ var _ = Describe("quotavalidator", func() {
 				},
 				Spec: garden.QuotaSpec{
 					ClusterLifetimeDays: &quotaSecretLifetime,
-					Scope:               garden.QuotaScopeSecret,
+					Scope: corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+					},
 					Metrics: corev1.ResourceList{
 						garden.QuotaMetricCPU:             resource.MustParse("4"),
 						garden.QuotaMetricGPU:             resource.MustParse("0"),
@@ -229,7 +236,7 @@ var _ = Describe("quotavalidator", func() {
 			It("should pass because all quotas limits are sufficient", func() {
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -237,7 +244,7 @@ var _ = Describe("quotavalidator", func() {
 				shoot.Spec.Cloud.GCP.Workers[0].AutoScalerMax = 2
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).To(HaveOccurred())
 			})
 
@@ -248,7 +255,7 @@ var _ = Describe("quotavalidator", func() {
 
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).To(HaveOccurred())
 			})
 
@@ -256,7 +263,7 @@ var _ = Describe("quotavalidator", func() {
 				shoot.Spec.Cloud.GCP = &shootSpecCloudGCE2Worker
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).To(HaveOccurred())
 			})
 
@@ -268,7 +275,7 @@ var _ = Describe("quotavalidator", func() {
 				shoot.Spec.Kubernetes.Version = "1.1.1"
 				attrs := admission.NewAttributesRecord(&shoot, &oldShoot, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Update, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
@@ -281,7 +288,7 @@ var _ = Describe("quotavalidator", func() {
 
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -290,7 +297,7 @@ var _ = Describe("quotavalidator", func() {
 				gardenInformerFactory.Garden().InternalVersion().SecretBindings().Informer().GetStore().Add(&secretBinding)
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -303,8 +310,11 @@ var _ = Describe("quotavalidator", func() {
 					},
 					Spec: garden.QuotaSpec{
 						ClusterLifetimeDays: &quotaProjectLifetime,
-						Scope:               garden.QuotaScopeProject,
-						Metrics:             corev1.ResourceList{},
+						Scope: corev1.ObjectReference{
+							APIVersion: "core.gardener.cloud/v1alpha1",
+							Kind:       "Project",
+						},
+						Metrics: corev1.ResourceList{},
 					},
 				}
 				secretBinding.Quotas = []corev1.ObjectReference{
@@ -318,7 +328,7 @@ var _ = Describe("quotavalidator", func() {
 				gardenInformerFactory.Garden().InternalVersion().SecretBindings().Informer().GetStore().Add(&secretBinding)
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
@@ -366,7 +376,7 @@ var _ = Describe("quotavalidator", func() {
 			It("should pass because quota is sufficient", func() {
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
@@ -388,7 +398,7 @@ var _ = Describe("quotavalidator", func() {
 
 				attrs := admission.NewAttributesRecord(&shoot, &oldShoot, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Update, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -396,7 +406,7 @@ var _ = Describe("quotavalidator", func() {
 				shoot.Annotations[common.ShootExpirationTimestamp] = "2018-01-02T00:00:00+00:00" // plus 1 day
 				attrs := admission.NewAttributesRecord(&shoot, &oldShoot, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Update, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -404,7 +414,7 @@ var _ = Describe("quotavalidator", func() {
 				shoot.Annotations[common.ShootExpirationTimestamp] = "2018-01-09T00:00:00+00:00" // plus 8 days
 				attrs := admission.NewAttributesRecord(&shoot, &oldShoot, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Update, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).To(HaveOccurred())
 			})
 		})
@@ -432,9 +442,9 @@ var _ = Describe("quotavalidator", func() {
 							},
 						},
 						Kubernetes: garden.KubernetesConstraints{
-							Versions: []string{
-								"1.0.1",
-								"1.1.1",
+							OfferedVersions: []garden.KubernetesVersion{
+								{Version: "1.0.1"},
+								{Version: "1.1.1"},
 							},
 						},
 					},
@@ -466,7 +476,7 @@ var _ = Describe("quotavalidator", func() {
 			It("should pass because quota is sufficient", func() {
 				attrs := admission.NewAttributesRecord(&shoot, nil, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Create, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -478,7 +488,7 @@ var _ = Describe("quotavalidator", func() {
 				shoot.Spec.Kubernetes.Version = "1.1.1"
 				attrs := admission.NewAttributesRecord(&shoot, &oldShoot, garden.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, garden.Resource("shoots").WithVersion("version"), "", admission.Update, false, nil)
 
-				err := admissionHandler.Admit(attrs)
+				err := admissionHandler.Validate(attrs, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})

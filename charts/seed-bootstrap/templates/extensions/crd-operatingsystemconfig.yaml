@@ -21,6 +21,10 @@ spec:
     type: string
     description: The type of the operating system configuration.
     JSONPath: .spec.type
+  - name: Status
+    type: string
+    description: Status of operating system configuration.
+    JSONPath: .status.lastOperation.state
   - name: Purpose
     type: string
     description: The purpose of the operating system configuration.
@@ -190,6 +194,10 @@ spec:
                   description: A human readable message indicating details about the
                     last error.
                   type: string
+                lastUpdateTime:
+                  description: Last time the error was reported
+                  format: date-time
+                  type: string
               required:
                 - description
               type: object
@@ -242,7 +250,5 @@ spec:
                 type: string
               type: array
           type: object
-{{- if semverCompare ">= 1.11-0" .Capabilities.KubeVersion.GitVersion }}
       required:
         - spec
-{{- end }}

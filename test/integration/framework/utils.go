@@ -19,37 +19,39 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/labels"
-
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
-	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
-
-	"github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/operation/common"
+	scheduler "github.com/gardener/gardener/pkg/scheduler/controller/shoot"
+	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	"github.com/gardener/gardener/pkg/utils/retry"
 
 	appsv1 "k8s.io/api/apps/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
-	kubecfg                   = "kubecfg"
 	kubeconfig                = "kubeconfig"
 	loggingIngressCredentials = "logging-ingress-credentials"
 	password                  = "password"
 )
 
-// getFirstRunningPodWithLabels fetches the first running pod with the desired set of labels <labelsMap>
-func (o *GardenerTestOperation) getFirstRunningPodWithLabels(ctx context.Context, labelsMap labels.Selector, namespace string, client kubernetes.Interface) (*corev1.Pod, error) {
+// GetFirstRunningPodWithLabels fetches the first running pod with the desired set of labels <labelsMap>
+func (o *GardenerTestOperation) GetFirstRunningPodWithLabels(ctx context.Context, labelsMap labels.Selector, namespace string, client kubernetes.Interface) (*corev1.Pod, error) {
 	var (
 		podList *corev1.PodList
 		err     error
 	)
-	podList, err = getPodsByLabels(ctx, labelsMap, client, namespace)
+	podList, err = o.GetPodsByLabels(ctx, labelsMap, client, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +60,7 @@ func (o *GardenerTestOperation) getFirstRunningPodWithLabels(ctx context.Context
 	}
 
 	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodRunning {
+		if health.IsPodReady(&pod) {
 			return &pod, nil
 		}
 	}
@@ -66,13 +68,26 @@ func (o *GardenerTestOperation) getFirstRunningPodWithLabels(ctx context.Context
 	return nil, ErrNoRunningPodsFound
 }
 
+// GetPodsByLabels fetches all pods with the desired set of labels <labelsMap>
+func (o *GardenerTestOperation) GetPodsByLabels(ctx context.Context, labelsMap labels.Selector, c kubernetes.Interface, namespace string) (*corev1.PodList, error) {
+	podList := &corev1.PodList{}
+	err := c.Client().List(ctx, podList, client.UseListOptions(&client.ListOptions{
+		Namespace:     namespace,
+		LabelSelector: labelsMap,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return podList, nil
+}
+
 // getAdminPassword gets the admin password for authenticating against the api
 func (o *GardenerTestOperation) getAdminPassword(ctx context.Context) (string, error) {
-	return getObjectFromSecret(ctx, o.SeedClient, o.ShootSeedNamespace(), kubecfg, password)
+	return GetObjectFromSecret(ctx, o.SeedClient, o.ShootSeedNamespace(), common.KubecfgSecretName, password)
 }
 
 func (o *GardenerTestOperation) getLoggingPassword(ctx context.Context) (string, error) {
-	return getObjectFromSecret(ctx, o.SeedClient, o.ShootSeedNamespace(), loggingIngressCredentials, password)
+	return GetObjectFromSecret(ctx, o.SeedClient, o.ShootSeedNamespace(), loggingIngressCredentials, password)
 }
 
 func (o *GardenerTestOperation) dashboardAvailable(ctx context.Context, url, userName, password string) error {
@@ -91,7 +106,7 @@ func (o *GardenerTestOperation) dashboardAvailable(ctx context.Context, url, use
 	}
 
 	httpRequest.SetBasicAuth(userName, password)
-	httpRequest.WithContext(ctx)
+	httpRequest = httpRequest.WithContext(ctx)
 
 	r, err := httpClient.Do(httpRequest)
 	if err != nil {
@@ -105,8 +120,8 @@ func (o *GardenerTestOperation) dashboardAvailable(ctx context.Context, url, use
 	return nil
 }
 
-func (s *ShootGardenerTest) mergePatch(ctx context.Context, oldShoot, newShoot *v1beta1.Shoot) error {
-	patchBytes, err := kubernetesutils.CreateTwoWayMergePatch(oldShoot, newShoot)
+func (s *ShootGardenerTest) mergePatch(ctx context.Context, oldShoot, newShoot *gardenv1beta1.Shoot) error {
+	patchBytes, err := kutil.CreateTwoWayMergePatch(oldShoot, newShoot)
 	if err != nil {
 		return fmt.Errorf("failed to patch bytes")
 	}
@@ -115,43 +130,34 @@ func (s *ShootGardenerTest) mergePatch(ctx context.Context, oldShoot, newShoot *
 	return err
 }
 
-func getPodsByLabels(ctx context.Context, labelsMap labels.Selector, c kubernetes.Interface, namespace string) (*corev1.PodList, error) {
-	podList := &corev1.PodList{}
-	err := c.Client().List(ctx, &client.ListOptions{
-		Namespace:     namespace,
-		LabelSelector: labelsMap,
-	}, podList)
-	if err != nil {
-		return nil, err
-	}
-	return podList, nil
-}
-
 func getDeploymentListByLabels(ctx context.Context, labelsMap labels.Selector, namespace string, c kubernetes.Interface) (*appsv1.DeploymentList, error) {
 	deploymentList := &appsv1.DeploymentList{}
-	err := c.Client().List(ctx,
-		&client.ListOptions{LabelSelector: labelsMap}, deploymentList)
+	err := c.Client().List(ctx, deploymentList, client.UseListOptions(&client.ListOptions{LabelSelector: labelsMap}))
 	if err != nil {
 		return nil, err
 	}
 	return deploymentList, nil
 }
 
-func shootCreationCompleted(newStatus *v1beta1.ShootStatus) bool {
-	if len(newStatus.Conditions) == 0 {
+// ShootCreationCompleted checks if a shoot is successfully reconciled.
+func ShootCreationCompleted(newShoot *gardenv1beta1.Shoot) bool {
+	if newShoot.Generation != newShoot.Status.ObservedGeneration {
+		return false
+	}
+	if len(newShoot.Status.Conditions) == 0 && newShoot.Status.LastOperation == nil {
 		return false
 	}
 
-	for _, condition := range newStatus.Conditions {
-		if condition.Status != gardenv1beta1.ConditionTrue {
+	for _, condition := range newShoot.Status.Conditions {
+		if condition.Status != gardencorev1alpha1.ConditionTrue {
 			return false
 		}
 	}
 
-	if newStatus.LastOperation != nil {
-		if newStatus.LastOperation.Type == v1beta1.ShootLastOperationTypeCreate ||
-			newStatus.LastOperation.Type == v1beta1.ShootLastOperationTypeReconcile {
-			if newStatus.LastOperation.State != v1beta1.ShootLastOperationStateSucceeded {
+	if newShoot.Status.LastOperation != nil {
+		if newShoot.Status.LastOperation.Type == gardencorev1alpha1.LastOperationTypeCreate ||
+			newShoot.Status.LastOperation.Type == gardencorev1alpha1.LastOperationTypeReconcile {
+			if newShoot.Status.LastOperation.State != gardencorev1alpha1.LastOperationStateSucceeded {
 				return false
 			}
 		}
@@ -160,7 +166,8 @@ func shootCreationCompleted(newStatus *v1beta1.ShootStatus) bool {
 	return true
 }
 
-func getObjectFromSecret(ctx context.Context, k8sClient kubernetes.Interface, namespace, secretName, objectKey string) (string, error) {
+// GetObjectFromSecret returns object from secret
+func GetObjectFromSecret(ctx context.Context, k8sClient kubernetes.Interface, namespace, secretName, objectKey string) (string, error) {
 	secret := &corev1.Secret{}
 	err := k8sClient.Client().Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, secret)
 	if err != nil {
@@ -182,4 +189,126 @@ func Exists(path string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// plantCreationSuccessful determines, based on the plant condition and Cluster Info, if the Plant was reconciled successfully
+func plantCreationSuccessful(plantStatus *gardencorev1alpha1.PlantStatus) bool {
+	if len(plantStatus.Conditions) == 0 {
+		return false
+	}
+
+	for _, condition := range plantStatus.Conditions {
+		if condition.Status != gardencorev1alpha1.ConditionTrue {
+			return false
+		}
+	}
+
+	if len(plantStatus.ClusterInfo.Kubernetes.Version) == 0 || len(plantStatus.ClusterInfo.Cloud.Type) == 0 || len(plantStatus.ClusterInfo.Cloud.Region) == 0 {
+		return false
+	}
+
+	return true
+}
+
+// plantReconciledWithStatusUnknown determines, based on the plant status.condition and status.ClusterInfo, if the PlantStatus is 'unknown'
+func plantReconciledWithStatusUnknown(plantStatus *gardencorev1alpha1.PlantStatus) bool {
+	if len(plantStatus.Conditions) == 0 {
+		return false
+	}
+
+	for _, condition := range plantStatus.Conditions {
+		if condition.Status != gardencorev1alpha1.ConditionFalse && condition.Status != gardencorev1alpha1.ConditionUnknown {
+			return false
+		}
+	}
+
+	if len(plantStatus.ClusterInfo.Kubernetes.Version) != 0 || len(plantStatus.ClusterInfo.Cloud.Type) != 0 && len(plantStatus.ClusterInfo.Cloud.Region) != 0 {
+		return false
+	}
+
+	return true
+}
+
+func shootIsUnschedulable(events []corev1.Event) bool {
+	if len(events) == 0 {
+		return false
+	}
+
+	for _, event := range events {
+		if strings.Contains(event.Message, scheduler.MsgUnschedulable) {
+			return true
+		}
+	}
+	return false
+}
+
+func shootIsScheduledSuccessfully(newSpec *gardenv1beta1.ShootSpec) bool {
+	if newSpec.Cloud.Seed != nil {
+		return true
+	}
+	return false
+}
+
+func setHibernation(shoot *gardenv1beta1.Shoot, hibernated bool) {
+	if shoot.Spec.Hibernation != nil {
+		shoot.Spec.Hibernation.Enabled = &hibernated
+	}
+	shoot.Spec.Hibernation = &gardenv1beta1.Hibernation{
+		Enabled: &hibernated,
+	}
+}
+
+// NewClientFromServiceAccount returns a kubernetes client for a service account.
+func NewClientFromServiceAccount(ctx context.Context, k8sClient kubernetes.Interface, account *corev1.ServiceAccount) (kubernetes.Interface, error) {
+	secret := &corev1.Secret{}
+	err := k8sClient.Client().Get(ctx, client.ObjectKey{Namespace: account.Namespace, Name: account.Secrets[0].Name}, secret)
+	if err != nil {
+		return nil, err
+	}
+
+	serviceAccountConfig := &rest.Config{
+		Host: k8sClient.RESTConfig().Host,
+		TLSClientConfig: rest.TLSClientConfig{
+			Insecure: false,
+			CAData:   secret.Data["ca.crt"],
+		},
+		BearerToken: string(secret.Data["token"]),
+	}
+
+	return kubernetes.NewWithConfig(
+		kubernetes.WithRESTConfig(serviceAccountConfig),
+		kubernetes.WithClientOptions(
+			client.Options{
+				Scheme: kubernetes.GardenScheme,
+			}),
+	)
+}
+
+// GetDeploymentReplicas gets the spec.Replicas count from a deployment
+func GetDeploymentReplicas(ctx context.Context, client client.Client, namespace, name string) (*int32, error) {
+	deployment := &appsv1.Deployment{}
+	if err := client.Get(ctx, kutil.Key(namespace, name), deployment); err != nil {
+		return nil, err
+	}
+	replicas := deployment.Spec.Replicas
+	return replicas, nil
+}
+
+// WaitUntilDeploymentScaled waits until the deployment has the desired replica count in the status
+func WaitUntilDeploymentScaled(ctx context.Context, client client.Client, namespace, name string, desiredReplicas int32) error {
+	return retry.Until(ctx, 5*time.Second, func(ctx context.Context) (done bool, err error) {
+		deployment := &appsv1.Deployment{}
+		if err := client.Get(ctx, kutil.Key(namespace, name), deployment); err != nil {
+			return retry.SevereError(err)
+		}
+		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != desiredReplicas {
+			return retry.SevereError(fmt.Errorf("waiting for deployment scale failed. spec.replicas does not match the desired replicas"))
+		}
+
+		if deployment.Status.Replicas == desiredReplicas && deployment.Status.AvailableReplicas == desiredReplicas {
+			return retry.Ok()
+		}
+
+		return retry.MinorError(fmt.Errorf("deployment currently has '%d' replicas. Desired: %d", deployment.Status.AvailableReplicas, desiredReplicas))
+	})
 }

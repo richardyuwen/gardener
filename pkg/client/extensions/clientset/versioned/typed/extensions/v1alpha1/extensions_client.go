@@ -11,7 +11,15 @@ import (
 
 type ExtensionsV1alpha1Interface interface {
 	RESTClient() rest.Interface
+	BackupBucketsGetter
+	BackupEntriesGetter
+	ClustersGetter
+	ControlPlanesGetter
+	ExtensionsGetter
+	InfrastructuresGetter
+	NetworksGetter
 	OperatingSystemConfigsGetter
+	WorkersGetter
 }
 
 // ExtensionsV1alpha1Client is used to interact with features provided by the extensions.gardener.cloud group.
@@ -19,8 +27,40 @@ type ExtensionsV1alpha1Client struct {
 	restClient rest.Interface
 }
 
+func (c *ExtensionsV1alpha1Client) BackupBuckets() BackupBucketInterface {
+	return newBackupBuckets(c)
+}
+
+func (c *ExtensionsV1alpha1Client) BackupEntries() BackupEntryInterface {
+	return newBackupEntries(c)
+}
+
+func (c *ExtensionsV1alpha1Client) Clusters() ClusterInterface {
+	return newClusters(c)
+}
+
+func (c *ExtensionsV1alpha1Client) ControlPlanes(namespace string) ControlPlaneInterface {
+	return newControlPlanes(c, namespace)
+}
+
+func (c *ExtensionsV1alpha1Client) Extensions(namespace string) ExtensionInterface {
+	return newExtensions(c, namespace)
+}
+
+func (c *ExtensionsV1alpha1Client) Infrastructures(namespace string) InfrastructureInterface {
+	return newInfrastructures(c, namespace)
+}
+
+func (c *ExtensionsV1alpha1Client) Networks(namespace string) NetworkInterface {
+	return newNetworks(c, namespace)
+}
+
 func (c *ExtensionsV1alpha1Client) OperatingSystemConfigs(namespace string) OperatingSystemConfigInterface {
 	return newOperatingSystemConfigs(c, namespace)
+}
+
+func (c *ExtensionsV1alpha1Client) Workers(namespace string) WorkerInterface {
+	return newWorkers(c, namespace)
 }
 
 // NewForConfig creates a new ExtensionsV1alpha1Client for the given config.

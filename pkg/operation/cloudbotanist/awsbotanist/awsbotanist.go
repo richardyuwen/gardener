@@ -16,31 +16,82 @@ package awsbotanist
 
 import (
 	"errors"
+	"fmt"
 
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
-	"github.com/gardener/gardener/pkg/client/aws"
 	"github.com/gardener/gardener/pkg/operation"
 	"github.com/gardener/gardener/pkg/operation/common"
-	corev1 "k8s.io/api/core/v1"
+
+	"github.com/gardener/gardener-extensions/controllers/provider-aws/pkg/apis/aws"
+	awsv1alpha1 "github.com/gardener/gardener-extensions/controllers/provider-aws/pkg/apis/aws/v1alpha1"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 )
+
+// IMPORTANT NOTICE
+// The following part is only temporarily needed until we have completed the Extensibility epic
+// and moved out all provider specifics.
+// IMPORTANT NOTICE
+
+var (
+	scheme  *runtime.Scheme
+	decoder runtime.Decoder
+)
+
+func init() {
+	scheme = runtime.NewScheme()
+
+	// Workaround for incompatible kubernetes dependencies in gardener/gardener and
+	// gardener/gardener-extensions.
+	awsSchemeBuilder := runtime.NewSchemeBuilder(func(scheme *runtime.Scheme) error {
+		scheme.AddKnownTypes(aws.SchemeGroupVersion, &aws.InfrastructureConfig{}, &aws.InfrastructureStatus{})
+		return nil
+	})
+	awsv1alpha1SchemeBuilder := runtime.NewSchemeBuilder(func(scheme *runtime.Scheme) error {
+		scheme.AddKnownTypes(awsv1alpha1.SchemeGroupVersion, &awsv1alpha1.InfrastructureConfig{}, &awsv1alpha1.InfrastructureStatus{})
+		return nil
+	})
+	schemeBuilder := runtime.NewSchemeBuilder(
+		awsv1alpha1SchemeBuilder.AddToScheme,
+		awsSchemeBuilder.AddToScheme,
+	)
+	utilruntime.Must(schemeBuilder.AddToScheme(scheme))
+
+	decoder = serializer.NewCodecFactory(scheme).UniversalDecoder()
+}
+
+func infrastructureStatusFromInfrastructure(raw []byte) (*awsv1alpha1.InfrastructureStatus, error) {
+	config := &awsv1alpha1.InfrastructureStatus{}
+	if _, _, err := decoder.Decode(raw, nil, config); err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
+func findRoleByPurpose(roles []awsv1alpha1.Role, purpose string) (*awsv1alpha1.Role, error) {
+	for _, role := range roles {
+		if role.Purpose == purpose {
+			return &role, nil
+		}
+	}
+	return nil, fmt.Errorf("cannot find role with purpose %q", purpose)
+}
+
+// IMPORTANT NOTICE
+// The above part is only temporarily needed until we have completed the Extensibility epic
+// and moved out all provider specifics.
+// IMPORTANT NOTICE
 
 // New takes an operation object <o> and creates a new AWSBotanist object.
 func New(o *operation.Operation, purpose string) (*AWSBotanist, error) {
-	var (
-		cloudProvider gardenv1beta1.CloudProvider
-		secret        *corev1.Secret
-		region        string
-	)
-
+	var cloudProvider gardenv1beta1.CloudProvider
 	switch purpose {
 	case common.CloudPurposeShoot:
 		cloudProvider = o.Shoot.CloudProvider
-		secret = o.Shoot.Secret
-		region = o.Shoot.Info.Spec.Cloud.Region
 	case common.CloudPurposeSeed:
 		cloudProvider = o.Seed.CloudProvider
-		secret = o.Seed.Secret
-		region = o.Seed.Info.Spec.Cloud.Region
 	}
 
 	if cloudProvider != gardenv1beta1.CloudProviderAWS {
@@ -50,7 +101,6 @@ func New(o *operation.Operation, purpose string) (*AWSBotanist, error) {
 	return &AWSBotanist{
 		Operation:         o,
 		CloudProviderName: "aws",
-		AWSClient:         aws.NewClient(string(secret.Data[AccessKeyID]), string(secret.Data[SecretAccessKey]), region),
 	}, nil
 }
 

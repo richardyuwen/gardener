@@ -18,9 +18,13 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/gardener/gardener/pkg/apis/garden/v1beta1"
-	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/sirupsen/logrus"
+
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/garden/v1beta1"
+	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/scheduler/apis/config"
 )
 
 // Helm is the home for the HELM repo
@@ -58,7 +62,40 @@ func (h Helm) CacheIndex(name string) string {
 type ShootGardenerTest struct {
 	GardenClient kubernetes.Interface
 
-	Shoot  *v1beta1.Shoot
+	Shoot        *gardenv1beta1.Shoot
+	CloudProfile *gardenv1beta1.CloudProfile
+	Logger       *logrus.Logger
+}
+
+// SchedulerGardenerTest represents an instance of scheduler tests which contains a shoot test & adds the scheduler configuration
+type SchedulerGardenerTest struct {
+	ShootGardenerTest      *ShootGardenerTest
+	CloudProfile           *gardenv1beta1.CloudProfile
+	SchedulerConfiguration *config.SchedulerConfiguration
+	Seeds                  []gardenv1beta1.Seed
+}
+
+// ShootMaintenanceTest contains all necessary data for the shoot maintenance integration test
+type ShootMaintenanceTest struct {
+	ShootGardenerTest *ShootGardenerTest
+	CloudProfile      *gardenv1beta1.CloudProfile
+	ShootMachineImage gardenv1beta1.ShootMachineImage
+	CloudProvider     gardenv1beta1.CloudProvider
+}
+
+// WorkerGardenerTest represents an instance of worker tests which contains a shoot test & adds the worker configuration
+type WorkerGardenerTest struct {
+	ShootGardenerTest *ShootGardenerTest
+	CloudProfile      *v1beta1.CloudProfile
+	ShootClient       kubernetes.Interface
+}
+
+// PlantTest represents an instance of shoot tests which entails all necessary data
+type PlantTest struct {
+	GardenClient                  kubernetes.Interface
+	Plant                         *gardencorev1alpha1.Plant
+	kubeconfigPathExternalCluster string
+	//PlantSecret                   *v1.Secret
 	Logger *logrus.Logger
 }
 
@@ -69,9 +106,10 @@ type GardenerTestOperation struct {
 	SeedClient   kubernetes.Interface
 	ShootClient  kubernetes.Interface
 
-	Seed    *v1beta1.Seed
-	Shoot   *v1beta1.Shoot
-	Project *v1beta1.Project
+	Seed             *gardenv1beta1.Seed
+	SeedCloudProfile *gardenv1beta1.CloudProfile
+	Shoot            *gardenv1beta1.Shoot
+	Project          *gardenv1beta1.Project
 }
 
 // HelmAccess is a struct that holds the helm home

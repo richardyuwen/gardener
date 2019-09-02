@@ -9,15 +9,24 @@ is divided into the following major subdirectories:
 
 ```console
 ├── framework
+├── gardener
+│   ├── rbac
+│   └── reconcile
+├── plants
 ├── resources
 │   ├── charts
 │   ├── repository
 │   └── templates
-└── seeds
-    ├── logging
+├── scheduler
+├── seeds
+│   └── logging
 └── shoots
     ├── applications
-    └── operations
+    ├── maintenance
+    ├── operations
+    ├── ts
+    ├── update
+    └── worker
 ```
 
 In the following sections we will briefly describe the contents of each subdirectory.
@@ -29,13 +38,17 @@ The framework directory contains all the necessary functions / utilities for run
 ```console
 framework
 ├── common.go
+├── dump.go
 ├── errors.go
+├── garden_operation.go
 ├── helm_utils.go
-├── shoot_app.go
+├── plant_operations.go
+├── scheduler_operations.go
+├── shoot_maintenance_operations.go
 ├── shoot_operations.go
-├── tiller.go
 ├── types.go
-└── utils.go
+├── utils.go
+└── worker_operations.go
 ```
 
 ### Resources
@@ -45,13 +58,11 @@ The resources directory contains all the templates, helm config files (e.g., rep
 ```console
 resources
 ├── charts
-│   └── redis
 ├── repository
-│   ├── cache
-│   └── repositories.yaml
+│   └── repositories.yaml
 └── templates
-    └── guestbook-app.yaml.tp
-    └── (...)
+    ├── guestbook-app.yaml.tpl
+    └── logger-app.yaml.tpl
 ```
 
 There are two special directories that are dynamically filled with the correct test files:
@@ -133,7 +144,7 @@ cleanup           = flag.Bool("cleanup", false, "deletes the newly created / exi
 To create a test shoot and run the tests on it, use the following command:
 
 ```console
-go test -kubeconfig $HOME/.kube/config  -shootpath shoot.yaml -cleanup -ginkgo.v 
+go test -kubeconfig $HOME/.kube/config  -shootpath shoot.yaml -cleanup -ginkgo.v
 ```
 
 > NOTE: please remove the shoot name `metadata.name` and the DNS domain `spec.dns.domain` from your shoot YAML as the testing framework will be creating those for you.
@@ -183,7 +194,7 @@ To create a test shoot and run the tests on it, use the following command:
 
 ```console
 cd test/integration/seeds/logging
-go test -kubeconfig $HOME/.kube/config -shootpath shoot.yaml -timeout 20m -cleanup -ginkgo.v 
+go test -kubeconfig $HOME/.kube/config -shootpath shoot.yaml -timeout 20m -cleanup -ginkgo.v
 ```
 
 To use an existing shoot, the following command can be used:
@@ -191,4 +202,44 @@ To use an existing shoot, the following command can be used:
 ```console
 cd test/integration/seeds/logging
 go test -kubeconfig $HOME/.kube/config -shootName "test-zefc8aswue" -shootNamespace "garden-dev" -ginkgo.v -ginkgo.progress
+```
+
+## Gardener
+
+Currently the gardener tests consists of:
+
+- RBAC test
+- shoots reconcile test
+
+### Gardener RBAC test
+
+The gardener RBAC test is meant to test if RBAC is enabled on the gardener cluster.
+This is tested by:
+1. Check if the RBAC API-Resource is available
+2. Check if a service account in a project namespace can access the `garden` project.
+
+#### Example Run
+```console
+cd test/integration/gardener/rbac
+ginkgo \
+    --progress \
+    -v \
+    --noColor \
+    -kubeconfig=$HOME/.kube/config \
+    -project-namespace=garden-core
+```
+
+### Gardener reconcile test
+
+The gardener reconcile test checks if all shoots of a gardener cluster are successfully reconciled after the gardener version was updated.
+
+#### Example Run
+```console
+cd test/integration/gardener/rbac
+ginkgo \
+    --progress \
+    -v \
+    --noColor \
+    -kubeconfig=$HOME/.kube/config \
+    -version=0.26.4
 ```

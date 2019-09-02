@@ -15,9 +15,7 @@
 package cloudbotanist
 
 import (
-	"github.com/gardener/gardener/pkg/operation"
-	"github.com/gardener/gardener/pkg/operation/common"
-	"k8s.io/apimachinery/pkg/util/sets"
+	"github.com/gardener/etcd-backup-restore/pkg/snapstore"
 )
 
 // CloudBotanist is an interface which must be implemented by cloud-specific Botanists. The Cloud Botanist
@@ -26,37 +24,10 @@ type CloudBotanist interface {
 	GetCloudProviderName() string
 
 	// Infrastructure
-	DeployInfrastructure() error
-	DestroyInfrastructure() error
 	DeployBackupInfrastructure() error
 	DestroyBackupInfrastructure() error
 
 	// Control Plane
-	GenerateCloudProviderConfig() (string, error)
-	RefreshCloudProviderConfig(map[string]string) map[string]string
-	GenerateCloudConfigUserDataConfig() *common.CloudConfigUserDataConfig
-	GenerateEtcdBackupConfig() (map[string][]byte, map[string]interface{}, error)
-	GenerateKubeAPIServerServiceConfig() (map[string]interface{}, error)
-	GenerateKubeAPIServerExposeConfig() (map[string]interface{}, error)
-	GenerateKubeAPIServerConfig() (map[string]interface{}, error)
-	GenerateCloudControllerManagerConfig() (map[string]interface{}, string, error)
-	GenerateKubeControllerManagerConfig() (map[string]interface{}, error)
-	GenerateKubeSchedulerConfig() (map[string]interface{}, error)
-	DeployCloudSpecificControlPlane() error
-	GenerateCSIConfig() (map[string]interface{}, error)
-
-	// Machines
-	GetMachineClassInfo() (string, string, string)
-	GenerateMachineConfig() ([]map[string]interface{}, operation.MachineDeployments, error)
-	GenerateMachineClassSecretData() map[string][]byte
-	ListMachineClasses() (sets.String, sets.String, error)
-	CleanupMachineClasses(existingMachineDeployments operation.MachineDeployments) error
-
-	// Addons
-	DeployKube2IAMResources() error
-	DestroyKube2IAMResources() error
-	GenerateKube2IAMConfig() (map[string]interface{}, error)
-	GenerateStorageClassesConfig() (map[string]interface{}, error)
-	GenerateNginxIngressConfig() (map[string]interface{}, error)
-	GenerateVPNShootConfig() (map[string]interface{}, error)
+	GenerateEtcdBackupConfig() (map[string][]byte, error)
+	GetEtcdBackupSnapstore(map[string][]byte) (snapstore.SnapStore, error)
 }

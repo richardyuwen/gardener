@@ -17,9 +17,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/ghodss/yaml"
 	"os"
 	"strconv"
 
+	helper "github.com/gardener/gardener/.test-defs/cmd"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/test/integration/framework"
@@ -38,12 +40,17 @@ var (
 	k8sVersion        string
 
 	// optional parameters
-	machineType   string
-	autoScalerMin *int
-	autoScalerMax *int
+	seed                string
+	machineImage        string
+	machineImageVersion string
+	shootArtifactPath   string
+	machineType         string
+	autoScalerMin       *int
+	autoScalerMax       *int
 
 	// required for openstack
-	floatingPoolName string
+	floatingPoolName     string
+	loadBalancerProvider string
 
 	testLogger *logrus.Logger
 )
@@ -88,6 +95,19 @@ func init() {
 		testLogger.Fatalf("EnvVar 'K8S_VERSION' needs to be specified")
 	}
 
+	shootArtifactPath = os.Getenv("SHOOT_ARTIFACT_PATH")
+	if shootArtifactPath == "" {
+		shootArtifactPath = fmt.Sprintf("example/90-shoot-%s.yaml", cloudprovider)
+	}
+	seed = os.Getenv("SEED")
+	machineImage = os.Getenv("MACHINE_IMAGE")
+	machineImageVersion = os.Getenv("MACHINE_IMAGE_VERSION")
+	if machineImage != "" && machineImageVersion == "" {
+		testLogger.Fatalf("MACHINE_IMAGE_VERSION has to be defined if MACHINE_IMAGE is set")
+	}
+	if machineImageVersion != "" && machineImage == "" {
+		testLogger.Fatalf("MACHINE_IMAGE has to be defined if MACHINE_IMAGE_VERSION is set")
+	}
 	machineType = os.Getenv("MACHINE_TYPE")
 	if autoScalerMinEnv := os.Getenv("AUTOSCALER_MIN"); autoScalerMinEnv != "" {
 		autoScalerMinInt, err := strconv.Atoi(autoScalerMinEnv)
@@ -104,6 +124,7 @@ func init() {
 		autoScalerMax = &autoScalerMaxInt
 	}
 
+	loadBalancerProvider = os.Getenv("LOADBALANCER_PROVIDER")
 	floatingPoolName = os.Getenv("FLOATING_POOL_NAME")
 	if cloudprovider == gardenv1beta1.CloudProviderOpenStack && floatingPoolName == "" {
 		testLogger.Fatalf("EnvVar 'FLOATING_POOL_NAME' needs to be specified when creating a shoot on openstack")
@@ -120,7 +141,7 @@ func main() {
 		testLogger.Fatalf("Cannot create ShootGardenerTest %s", err.Error())
 	}
 
-	_, shootObject, err := framework.CreateShootTestArtifacts(fmt.Sprintf("example/90-shoot-%s.yaml", cloudprovider), "")
+	_, shootObject, err := framework.CreateShootTestArtifacts(shootArtifactPath, "", true)
 	if err != nil {
 		testLogger.Fatalf("Cannot create shoot artifact %s", err.Error())
 	}
@@ -131,18 +152,56 @@ func main() {
 	shootObject.Spec.Cloud.Region = region
 	shootObject.Spec.Cloud.SecretBindingRef.Name = secretBindingName
 	shootObject.Spec.Kubernetes.Version = k8sVersion
-	updateWorkerZone(shootObject, cloudprovider, zone)
-	updateMachineType(shootObject, cloudprovider, machineType)
-	updateAutoscalerMinMax(shootObject, cloudprovider, autoScalerMin, autoScalerMax)
-	updateFloatingPoolName(shootObject, floatingPoolName, cloudprovider)
+
+	if seed != "" {
+		shootObject.Spec.Cloud.Seed = &seed
+	}
+	helper.UpdateAnnotations(shootObject)
+	if err := helper.UpdateMachineImage(shootObject, cloudprovider, machineImage, machineImageVersion); err != nil {
+		testLogger.Warnf(err.Error())
+	}
+	if err := helper.UpdateWorkerZone(shootObject, cloudprovider, zone); err != nil {
+		testLogger.Warnf(err.Error())
+	}
+	if err := helper.UpdateMachineType(shootObject, cloudprovider, machineType); err != nil {
+		testLogger.Warnf(err.Error())
+	}
+	if err := helper.UpdateAutoscalerMin(shootObject, cloudprovider, autoScalerMin); err != nil {
+		testLogger.Warnf(err.Error())
+	}
+	if err := helper.UpdateAutoscalerMax(shootObject, cloudprovider, autoScalerMax); err != nil {
+		testLogger.Warnf(err.Error())
+	}
+	helper.UpdateFloatingPoolName(shootObject, floatingPoolName, cloudprovider)
+	helper.UpdateLoadBalancerProvider(shootObject, loadBalancerProvider, cloudprovider)
+
+	// TODO: tests need to be adopted when nginx gets removed.
+	shootObject.Spec.Addons.NginxIngress = &gardenv1beta1.NginxIngress{
+		Addon: gardenv1beta1.Addon{
+			Enabled: true,
+		},
+	}
 
 	testLogger.Infof("Create shoot %s in namespace %s", shootName, projectNamespace)
+	if err := printShoot(shootObject); err != nil {
+		testLogger.Fatalf("Cannot decode shoot %s: %s", shootName, err)
+	}
+
 	shootGardenerTest.Shoot = shootObject
 	shootObject, err = shootGardenerTest.CreateShoot(ctx)
 	if err != nil {
 		testLogger.Fatalf("Cannot create shoot %s: %s", shootName, err.Error())
 	}
 	testLogger.Infof("Successfully created shoot %s", shootName)
+
+	backupInfrastructure, err := helper.GetBackupInfrastructureOfShoot(ctx, shootGardenerTest, shootObject)
+	if err != nil {
+		testLogger.Fatal(err)
+	}
+	helper.UpdateBackupInfrastructureAnnotations(backupInfrastructure)
+	if err := shootGardenerTest.GardenClient.Client().Update(ctx, backupInfrastructure); err != nil {
+		testLogger.Fatalf("Cannot update annotation of backupinfrastructure %s: %s", backupInfrastructure.Name, err.Error())
+	}
 
 	shootTestOperations, err := framework.NewGardenTestOperation(ctx, shootGardenerTest.GardenClient, testLogger, shootObject)
 	if err != nil {
@@ -153,5 +212,18 @@ func main() {
 	if err != nil {
 		testLogger.Fatalf("Cannot download shoot kubeconfig: %s", err.Error())
 	}
+	err = shootTestOperations.DownloadKubeconfig(ctx, shootTestOperations.GardenClient, shootTestOperations.Seed.Spec.SecretRef.Namespace, shootTestOperations.Seed.Spec.SecretRef.Name, fmt.Sprintf("%s/seed.config", kubeconfigPath))
+	if err != nil {
+		testLogger.Fatalf("Cannot download seed kubeconfig: %s", err.Error())
+	}
 	testLogger.Infof("Finished creating shoot %s", shootName)
+}
+
+func printShoot(shoot *gardenv1beta1.Shoot) error {
+	d, err := yaml.Marshal(shoot)
+	if err != nil {
+		return err
+	}
+	fmt.Print(string(d))
+	return nil
 }

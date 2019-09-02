@@ -4,9 +4,9 @@ metadata:
   name: hourly-curator
   namespace: {{ .Release.Namespace }}
   labels:
-    garden.sapcloud.io/role: logging
     app: curator
     role: logging
+    garden.sapcloud.io/role: logging
 spec:
   schedule: {{ .Values.curator.hourly.schedule }}
   successfulJobsHistoryLimit: 1
@@ -22,19 +22,21 @@ spec:
             garden.sapcloud.io/role: logging
             app: curator
             role: logging
+            networking.gardener.cloud/to-dns: allowed
+            networking.gardener.cloud/to-elasticsearch: allowed
         spec:
           containers:
           - image: {{ index .Values.global.images "curator-es" }}
             name: curator
-            command: ["/bin/sh","-c"]
-            args: ["extra-deleter --disk_threshold={{ include "curator.disk_threshold" .Values.curator }}; curator --config /etc/config/config.yml /etc/config/action_file.yml"]
+            command: ["/bin/sh", "-c"]
+            args: ["curator-es --disk-space-threshold={{ .Values.curator.diskSpaceThreshold | int64 }}; curator --config /etc/config/config.yml /etc/config/action_file.yml"]
             volumeMounts:
             - name: config
               mountPath: /etc/config
             resources:
               limits:
                 cpu: 10m
-                memory: 50Mi
+                memory: 60Mi
               requests:
                 cpu: 10m
                 memory: 30Mi
@@ -50,9 +52,9 @@ metadata:
   name: daily-curator
   namespace: {{ .Release.Namespace }}
   labels:
-    garden.sapcloud.io/role: logging
     app: curator
     role: logging
+    garden.sapcloud.io/role: logging
 spec:
   schedule: {{ .Values.curator.daily.schedule }}
   successfulJobsHistoryLimit: 1
@@ -68,6 +70,8 @@ spec:
             garden.sapcloud.io/role: logging
             app: curator
             role: logging
+            networking.gardener.cloud/to-dns: allowed
+            networking.gardener.cloud/to-elasticsearch: allowed
         spec:
           containers:
           - image: {{ index .Values.global.images "curator-es" }}
@@ -82,7 +86,7 @@ spec:
             resources:
               limits:
                 cpu: 10m
-                memory: 50Mi
+                memory: 70Mi
               requests:
                 cpu: 10m
                 memory: 30Mi

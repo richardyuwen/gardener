@@ -18,10 +18,13 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 
+	"github.com/gardener/etcd-backup-restore/pkg/miscellaneous"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
+	gardenv1beta1helper "github.com/gardener/gardener/pkg/apis/garden/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/operation/cloudbotanist"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -30,12 +33,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	audit_internal "k8s.io/apiserver/pkg/apis/audit"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	auditv1alpha1 "k8s.io/apiserver/pkg/apis/audit/v1alpha1"
 	auditv1beta1 "k8s.io/apiserver/pkg/apis/audit/v1beta1"
 	auditvalidation "k8s.io/apiserver/pkg/apis/audit/validation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -68,199 +73,152 @@ func getResourcesForAPIServer(nodeCount int) (string, string, string, string) {
 	switch {
 	case nodeCount <= 2:
 		cpuRequest = "800m"
-		memoryRequest = "600Mi"
-
-		cpuLimit = "1000m"
-		memoryLimit = "900Mi"
-	case nodeCount <= 10:
-		cpuRequest = "1000m"
 		memoryRequest = "800Mi"
 
+		cpuLimit = "1000m"
+		memoryLimit = "1200Mi"
+	case nodeCount <= 10:
+		cpuRequest = "1000m"
+		memoryRequest = "1100Mi"
+
 		cpuLimit = "1200m"
-		memoryLimit = "1400Mi"
+		memoryLimit = "1900Mi"
 	case nodeCount <= 50:
 		cpuRequest = "1200m"
-		memoryRequest = "1200Mi"
+		memoryRequest = "1600Mi"
 
 		cpuLimit = "1500m"
-		memoryLimit = "3000Mi"
+		memoryLimit = "3900Mi"
 	case nodeCount <= 100:
 		cpuRequest = "2500m"
-		memoryRequest = "4000Mi"
+		memoryRequest = "5200Mi"
 
 		cpuLimit = "3000m"
-		memoryLimit = "4500Mi"
+		memoryLimit = "5900Mi"
 	default:
 		cpuRequest = "3000m"
-		memoryRequest = "4000Mi"
+		memoryRequest = "5200Mi"
 
 		cpuLimit = "4000m"
-		memoryLimit = "6000Mi"
+		memoryLimit = "7800Mi"
 	}
 
 	return cpuRequest, memoryRequest, cpuLimit, memoryLimit
 }
 
-// DeployETCD deploys two etcd clusters via StatefulSets. The first etcd cluster (called 'main') is used for all the
-/// data the Shoot Kubernetes cluster needs to store, whereas the second etcd luster (called 'events') is only used to
-// store the events data. The objectstore is also set up to store the backups.
-func (b *HybridBotanist) DeployETCD() error {
-	secretData, backupConfigData, err := b.SeedCloudBotanist.GenerateEtcdBackupConfig()
+func (b *HybridBotanist) deployNetworkPolicies(ctx context.Context, denyAll bool) error {
+	var (
+		globalNetworkPoliciesValues = map[string]interface{}{
+			"blockedAddresses": b.Seed.Info.Spec.BlockCIDRs,
+			"denyAll":          denyAll,
+		}
+		excludeNets = []gardencorev1alpha1.CIDR{}
+
+		values            = map[string]interface{}{}
+		shootCIDRNetworks = []gardencorev1alpha1.CIDR{}
+	)
+
+	for _, addr := range b.Seed.Info.Spec.BlockCIDRs {
+		excludeNets = append(excludeNets, addr)
+	}
+
+	networks, err := b.Shoot.GetK8SNetworks()
 	if err != nil {
 		return err
 	}
-
-	// Some cloud botanists do not yet support backup and won't return secret data.
-	if secretData != nil {
-		if _, err := b.K8sSeedClient.CreateSecret(b.Shoot.SeedNamespace, common.BackupSecretName, corev1.SecretTypeOpaque, secretData, true); err != nil {
+	if networks != nil {
+		if networks.Nodes != nil {
+			shootCIDRNetworks = append(shootCIDRNetworks, *networks.Nodes)
+		}
+		if networks.Pods != nil {
+			shootCIDRNetworks = append(shootCIDRNetworks, *networks.Pods)
+		}
+		if networks.Services != nil {
+			shootCIDRNetworks = append(shootCIDRNetworks, *networks.Services)
+		}
+		shootNetworkValues, err := common.ExceptNetworks(shootCIDRNetworks, excludeNets...)
+		if err != nil {
 			return err
 		}
+		values["clusterNetworks"] = shootNetworkValues
 	}
 
-	etcdConfig := map[string]interface{}{
-		"podAnnotations": map[string]interface{}{
-			"checksum/secret-etcd-ca":         b.CheckSums["ca-etcd"],
-			"checksum/secret-etcd-server-tls": b.CheckSums["etcd-server-tls"],
-			"checksum/secret-etcd-client-tls": b.CheckSums["etcd-client-tls"],
-		},
-		"storage": b.Seed.GetValidVolumeSize("10Gi"),
-	}
+	seedNetworks := b.Seed.Info.Spec.Networks
+	allCIDRNetworks := append([]gardencorev1alpha1.CIDR{seedNetworks.Nodes, seedNetworks.Pods, seedNetworks.Services}, shootCIDRNetworks...)
+	allCIDRNetworks = append(allCIDRNetworks, excludeNets...)
 
-	// Some cloud botanists do not yet support backup and won't return backup config data.
-	if backupConfigData != nil {
-		etcdConfig["backup"] = backupConfigData
-		etcdConfig["podAnnotations"].(map[string]interface{})["checksum/secret-etcd-backup"] = utils.HashForMap(backupConfigData)
-	}
-
-	etcd, err := b.Botanist.InjectImages(etcdConfig, b.SeedVersion(), b.ShootVersion(), common.ETCDImageName, common.ETCDBackupRestoreImageName)
+	privateNetworks, err := common.ToExceptNetworks(common.AllPrivateNetworkBlocks(), allCIDRNetworks...)
 	if err != nil {
 		return err
 	}
+	globalNetworkPoliciesValues["privateNetworks"] = privateNetworks
+	values["global-network-policies"] = globalNetworkPoliciesValues
 
-	for _, role := range []string{common.EtcdRoleMain, common.EtcdRoleEvents} {
-		etcd["role"] = role
-		if role == common.EtcdRoleEvents {
-			etcd["backup"] = map[string]interface{}{
-				"storageProvider": "", // No storage provider means no backup
-			}
-		}
-
-		if b.Shoot.IsHibernated {
-			statefulset := &appsv1.StatefulSet{}
-			if err := b.K8sSeedClient.Client().Get(context.TODO(), kutil.Key(b.Shoot.SeedNamespace, fmt.Sprintf("etcd-%s", role)), statefulset); err != nil && !apierrors.IsNotFound(err) {
-				return err
-			}
-
-			if statefulset.Spec.Replicas == nil {
-				etcd["replicas"] = 0
-			} else {
-				etcd["replicas"] = *statefulset.Spec.Replicas
-			}
-		}
-
-		if err := b.ApplyChartSeed(filepath.Join(chartPathControlPlane, "etcd"), fmt.Sprintf("etcd-%s", role), b.Shoot.SeedNamespace, nil, etcd); err != nil {
-			return err
-		}
-		if err := b.K8sSeedClient.DeleteService(b.Shoot.SeedNamespace, fmt.Sprintf("etcd-%s", role)); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-
-	return nil
+	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, "network-policies"), b.Shoot.SeedNamespace, "network-policies", values, nil)
 }
 
-// DeployCloudProviderConfig asks the Cloud Botanist to provide the cloud specific values for the cloud
-// provider configuration. It will create a ConfigMap for it and store it in the Seed cluster.
-func (b *HybridBotanist) DeployCloudProviderConfig() error {
-	cloudProviderConfig, err := b.ShootCloudBotanist.GenerateCloudProviderConfig()
-	if err != nil {
-		return err
-	}
-	b.CheckSums[common.CloudProviderConfigName] = computeCloudProviderConfigChecksum(cloudProviderConfig)
-
-	defaultValues := map[string]interface{}{
-		"cloudProviderConfig": cloudProviderConfig,
-	}
-
-	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, common.CloudProviderConfigName), common.CloudProviderConfigName, b.Shoot.SeedNamespace, nil, defaultValues)
+// DeployNetworkPolicies creates a network policies in a Shoot cluster's namespace that
+// deny all traffic and allow certain components to use annotations to declare their desire
+// to transmit/receive traffic to/from other Pods/IP addresses.
+func (b *HybridBotanist) DeployNetworkPolicies(ctx context.Context) error {
+	return b.deployNetworkPolicies(ctx, true)
 }
 
-// RefreshCloudProviderConfig asks the Cloud Botanist to refresh the cloud provider config in case it stores
-// the cloud provider credentials. The Cloud Botanist is expected to return the complete updated cloud config.
-func (b *HybridBotanist) RefreshCloudProviderConfig() error {
-	currentConfig, err := b.K8sSeedClient.GetConfigMap(b.Shoot.SeedNamespace, common.CloudProviderConfigName)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-
-	newConfigData := b.ShootCloudBotanist.RefreshCloudProviderConfig(currentConfig.Data)
-	b.CheckSums[common.CloudProviderConfigName] = computeCloudProviderConfigChecksum(newConfigData[common.CloudProviderConfigMapKey])
-
-	_, err = b.K8sSeedClient.UpdateConfigMap(b.Shoot.SeedNamespace, common.CloudProviderConfigName, newConfigData)
-	return err
-}
-
-func computeCloudProviderConfigChecksum(cloudProviderConfig string) string {
-	return utils.ComputeSHA256Hex([]byte(strings.TrimSpace(cloudProviderConfig)))
-}
-
-// DeployKubeAPIServerService asks the Cloud Botanist to provide the cloud specific configuration values for the
-// kube-apiserver service.
+// DeployKubeAPIServerService deploys kube-apiserver service.
 func (b *HybridBotanist) DeployKubeAPIServerService() error {
 	var (
 		name          = "kube-apiserver-service"
 		defaultValues = map[string]interface{}{}
 	)
 
-	cloudSpecificValues, err := b.SeedCloudBotanist.GenerateKubeAPIServerServiceConfig()
-	if err != nil {
-		return err
-	}
-
-	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, name), name, b.Shoot.SeedNamespace, defaultValues, cloudSpecificValues)
+	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, name), b.Shoot.SeedNamespace, name, defaultValues, nil)
 }
 
-// DeployKubeAPIServer asks the Cloud Botanist to provide the cloud specific configuration values for the
-// kube-apiserver deployment.
+// DeployKubeAPIServer deploys kube-apiserver deployment.
 func (b *HybridBotanist) DeployKubeAPIServer() error {
 	defaultValues := map[string]interface{}{
 		"etcdServicePort":   2379,
 		"kubernetesVersion": b.Shoot.Info.Spec.Kubernetes.Version,
 		"shootNetworks": map[string]interface{}{
 			"service": b.Shoot.GetServiceNetwork(),
+			"pod":     b.Shoot.GetPodNetwork(),
+			"node":    b.Shoot.GetNodeNetwork(),
 		},
 		"seedNetworks": map[string]interface{}{
 			"service": b.Seed.Info.Spec.Networks.Services,
 			"pod":     b.Seed.Info.Spec.Networks.Pods,
 			"node":    b.Seed.Info.Spec.Networks.Nodes,
 		},
-		"maxReplicas":      3,
-		"securePort":       443,
-		"probeCredentials": utils.EncodeBase64([]byte(fmt.Sprintf("%s:%s", b.Secrets["kubecfg"].Data["username"], b.Secrets["kubecfg"].Data["password"]))),
+		"maxReplicas":               3,
+		"enableBasicAuthentication": gardenv1beta1helper.ShootWantsBasicAuthentication(b.Shoot.Info),
+		"probeCredentials":          b.APIServerHealthCheckToken,
+		"securePort":                443,
 		"podAnnotations": map[string]interface{}{
-			"checksum/secret-ca":                        b.CheckSums["ca"],
-			"checksum/secret-ca-front-proxy":            b.CheckSums["ca-front-proxy"],
-			"checksum/secret-kube-apiserver":            b.CheckSums[common.KubeAPIServerDeploymentName],
-			"checksum/secret-kube-aggregator":           b.CheckSums["kube-aggregator"],
-			"checksum/secret-kube-apiserver-kubelet":    b.CheckSums["kube-apiserver-kubelet"],
-			"checksum/secret-kube-apiserver-basic-auth": b.CheckSums["kube-apiserver-basic-auth"],
-			"checksum/secret-vpn-seed":                  b.CheckSums["vpn-seed"],
-			"checksum/secret-vpn-seed-tlsauth":          b.CheckSums["vpn-seed-tlsauth"],
-			"checksum/secret-service-account-key":       b.CheckSums["service-account-key"],
-			"checksum/secret-etcd-ca":                   b.CheckSums["ca-etcd"],
-			"checksum/secret-etcd-client-tls":           b.CheckSums["etcd-client-tls"],
+			"checksum/secret-ca":                     b.CheckSums[gardencorev1alpha1.SecretNameCACluster],
+			"checksum/secret-ca-front-proxy":         b.CheckSums[gardencorev1alpha1.SecretNameCAFrontProxy],
+			"checksum/secret-kube-apiserver":         b.CheckSums[gardencorev1alpha1.DeploymentNameKubeAPIServer],
+			"checksum/secret-kube-aggregator":        b.CheckSums["kube-aggregator"],
+			"checksum/secret-kube-apiserver-kubelet": b.CheckSums["kube-apiserver-kubelet"],
+			"checksum/secret-static-token":           b.CheckSums[common.StaticTokenSecretName],
+			"checksum/secret-vpn-seed":               b.CheckSums["vpn-seed"],
+			"checksum/secret-vpn-seed-tlsauth":       b.CheckSums["vpn-seed-tlsauth"],
+			"checksum/secret-service-account-key":    b.CheckSums["service-account-key"],
+			"checksum/secret-etcd-ca":                b.CheckSums[gardencorev1alpha1.SecretNameCAETCD],
+			"checksum/secret-etcd-client-tls":        b.CheckSums["etcd-client-tls"],
 		},
 	}
-	cloudSpecificExposeValues, err := b.SeedCloudBotanist.GenerateKubeAPIServerExposeConfig()
+
+	enableEtcdEncryption, err := utils.CheckVersionMeetsConstraint(b.Shoot.Info.Spec.Kubernetes.Version, ">= 1.13")
 	if err != nil {
 		return err
 	}
-	cloudSpecificValues, err := b.ShootCloudBotanist.GenerateKubeAPIServerConfig()
-	if err != nil {
-		return err
+	if enableEtcdEncryption {
+		defaultValues["enableEtcdEncryption"] = true
+		defaultValues["podAnnotations"].(map[string]interface{})["checksum/secret-etcd-encryption"] = b.CheckSums[common.EtcdEncryptionSecretName]
+	}
+
+	if gardenv1beta1helper.ShootWantsBasicAuthentication(b.Shoot.Info) {
+		defaultValues["podAnnotations"].(map[string]interface{})["checksum/secret-"+common.BasicAuthSecretName] = b.CheckSums[common.BasicAuthSecretName]
 	}
 
 	if b.ShootedSeed != nil {
@@ -273,13 +231,13 @@ func (b *HybridBotanist) DeployKubeAPIServer() error {
 		defaultValues["maxReplicas"] = autoscaler.MaxReplicas
 		defaultValues["apiServerResources"] = map[string]interface{}{
 			"limits": map[string]interface{}{
-				"cpu":    "1500m",
-				"memory": "4000Mi",
+				"cpu":    "2000m",
+				"memory": "7000Mi",
 			},
 		}
 	} else {
 		deployment := &appsv1.Deployment{}
-		if err := b.K8sSeedClient.Client().Get(context.TODO(), kutil.Key(b.Shoot.SeedNamespace, common.KubeAPIServerDeploymentName), deployment); err != nil && !apierrors.IsNotFound(err) {
+		if err := b.K8sSeedClient.Client().Get(context.TODO(), kutil.Key(b.Shoot.SeedNamespace, gardencorev1alpha1.DeploymentNameKubeAPIServer), deployment); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 		replicas := deployment.Spec.Replicas
@@ -290,7 +248,7 @@ func (b *HybridBotanist) DeployKubeAPIServer() error {
 			defaultValues["replicas"] = *replicas
 		}
 		// If the shoot is hibernated then we want to keep the number of replicas (scale down happens later).
-		if b.Shoot.IsHibernated && (replicas == nil || *replicas == 0) {
+		if b.Shoot.HibernationEnabled && (replicas == nil || *replicas == 0) {
 			defaultValues["replicas"] = 0
 		}
 
@@ -312,17 +270,35 @@ func (b *HybridBotanist) DeployKubeAPIServer() error {
 		admissionPlugins = kubernetes.GetAdmissionPluginsForVersion(b.Shoot.Info.Spec.Kubernetes.Version)
 	)
 
-	// Needed due to https://github.com/kubernetes/kubernetes/pull/73102
-	if !b.Shoot.UsesCSI() {
-		admissionPlugins = append(admissionPlugins, gardenv1beta1.AdmissionPlugin{Name: "PersistentVolumeLabel"})
-	}
-
 	if apiServerConfig != nil {
 		defaultValues["featureGates"] = apiServerConfig.FeatureGates
 		defaultValues["runtimeConfig"] = apiServerConfig.RuntimeConfig
 
 		if apiServerConfig.OIDCConfig != nil {
 			defaultValues["oidcConfig"] = apiServerConfig.OIDCConfig
+		}
+
+		if serviceAccountConfig := apiServerConfig.ServiceAccountConfig; serviceAccountConfig != nil {
+			config := make(map[string]interface{})
+
+			if issuer := serviceAccountConfig.Issuer; issuer != nil {
+				config["issuer"] = *issuer
+			}
+
+			if signingKeySecret := serviceAccountConfig.SigningKeySecret; signingKeySecret != nil {
+				signingKey, err := common.GetServiceAccountSigningKeySecret(context.TODO(), b.K8sGardenClient.Client(), b.Shoot.Info.Namespace, signingKeySecret.Name)
+				if err != nil {
+					return err
+				}
+
+				config["signingKey"] = signingKey
+			}
+
+			defaultValues["serviceAccountConfig"] = config
+		}
+
+		if apiServerConfig.APIAudiences != nil {
+			defaultValues["apiAudiences"] = apiServerConfig.APIAudiences
 		}
 
 		for _, plugin := range apiServerConfig.AdmissionPlugins {
@@ -355,62 +331,22 @@ func (b *HybridBotanist) DeployKubeAPIServer() error {
 	}
 	defaultValues["admissionPlugins"] = admissionPlugins
 
-	if b.Shoot.UsesCSI() {
-		var featureGates map[string]interface{}
-		if defaultValues["featureGates"] != nil {
-			featureGates = defaultValues["featureGates"].(map[string]interface{})
-		}
-		featureGates, err := common.InjectCSIFeatureGates(b.ShootVersion(), featureGates)
-		if err != nil {
-			return err
-		}
-		if featureGates != nil {
-			defaultValues["featureGates"] = featureGates
-		}
-	} else {
-		// Needed due to https://github.com/kubernetes/kubernetes/pull/73102
-		defaultValues["cloudProvider"] = b.ShootCloudBotanist.GetCloudProviderName()
-		defaultValues["podAnnotations"].(map[string]interface{})["checksum/secret-cloudprovider"] = b.CheckSums[common.CloudProviderSecretName]
-		defaultValues["podAnnotations"].(map[string]interface{})["checksum/configmap-cloud-provider-config"] = b.CheckSums[common.CloudProviderConfigName]
-	}
-
-	values, err := b.Botanist.InjectImages(defaultValues, b.SeedVersion(), b.ShootVersion(),
+	values, err := b.InjectSeedShootImages(defaultValues,
 		common.HyperkubeImageName,
 		common.VPNSeedImageName,
 		common.BlackboxExporterImageName,
+		common.AlpineIptablesImageName,
 	)
 	if err != nil {
 		return err
 	}
 
-	// If shoot is hibernated we don't want the HPA to interfer with our scaling decisions.
-	if b.Shoot.IsHibernated {
-		if err := b.K8sSeedClient.DeleteHorizontalPodAutoscaler(b.Shoot.SeedNamespace, common.KubeAPIServerDeploymentName); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-
-	if err := b.ApplyChartSeed(filepath.Join(chartPathControlPlane, common.KubeAPIServerDeploymentName), common.KubeAPIServerDeploymentName, b.Shoot.SeedNamespace, values, utils.MergeMaps(cloudSpecificExposeValues, cloudSpecificValues)); err != nil {
-		return err
-	}
-
-	// Delete old network policies. This code can be removed in a future version.
-	for _, name := range []string{
-		"kube-apiserver-deny-blacklist",
-		"kube-apiserver-allow-dns",
-		"kube-apiserver-allow-etcd",
-		"kube-apiserver-allow-gardener-admission-controller",
-	} {
-		if err := b.K8sSeedClient.DeleteNetworkPolicy(b.Shoot.SeedNamespace, name); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
+	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, gardencorev1alpha1.DeploymentNameKubeAPIServer), b.Shoot.SeedNamespace, gardencorev1alpha1.DeploymentNameKubeAPIServer, values, nil)
 }
 
 func (b *HybridBotanist) getAuditPolicy(name, namespace string) (string, error) {
-	auditPolicyCm, err := b.K8sGardenClient.GetConfigMap(namespace, name)
-	if err != nil {
+	auditPolicyCm := &corev1.ConfigMap{}
+	if err := b.K8sGardenClient.Client().Get(context.TODO(), kutil.Key(namespace, name), auditPolicyCm); err != nil {
 		return "", err
 	}
 	auditPolicy, ok := auditPolicyCm.Data[auditPolicyConfigMapDataKey]
@@ -424,6 +360,13 @@ func (b *HybridBotanist) getAuditPolicy(name, namespace string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("Failed to decode the provided audit policy err=%v", err)
 	}
+
+	if isValidVersion, err := IsValidAuditPolicyVersion(b.ShootVersion(), schemaVersion); err != nil {
+		return "", err
+	} else if !isValidVersion {
+		return "", fmt.Errorf("Your shoot cluster version %q is not compatible with audit policy version %q", b.ShootVersion(), schemaVersion.GroupVersion().String())
+	}
+
 	auditPolicyInternal, ok := auditPolicyObj.(*audit_internal.Policy)
 	if !ok {
 		return "", fmt.Errorf("Failure to cast to audit Policy type: %v", schemaVersion)
@@ -435,41 +378,38 @@ func (b *HybridBotanist) getAuditPolicy(name, namespace string) (string, error) 
 	return auditPolicy, nil
 }
 
-// DeployKubeControllerManager asks the Cloud Botanist to provide the cloud specific configuration values for the
-// kube-controller-manager deployment.
+// IsValidAuditPolicyVersion checks whether the api server support the provided audit policy apiVersion
+func IsValidAuditPolicyVersion(shootVersion string, schemaVersion *schema.GroupVersionKind) (bool, error) {
+	auditGroupVersion := schemaVersion.GroupVersion().String()
+
+	if auditGroupVersion == "audit.k8s.io/v1" {
+		return utils.CheckVersionMeetsConstraint(shootVersion, ">= v1.12")
+	}
+	return true, nil
+}
+
+// DeployKubeControllerManager deploys kube-controller-manager deployment.
 func (b *HybridBotanist) DeployKubeControllerManager() error {
 	defaultValues := map[string]interface{}{
-		"cloudProvider":     b.ShootCloudBotanist.GetCloudProviderName(),
 		"clusterName":       b.Shoot.SeedNamespace,
 		"kubernetesVersion": b.Shoot.Info.Spec.Kubernetes.Version,
 		"podNetwork":        b.Shoot.GetPodNetwork(),
 		"serviceNetwork":    b.Shoot.GetServiceNetwork(),
 		"podAnnotations": map[string]interface{}{
-			"checksum/secret-ca":                             b.CheckSums["ca"],
-			"checksum/secret-kube-controller-manager":        b.CheckSums[common.KubeControllerManagerDeploymentName],
+			"checksum/secret-ca":                             b.CheckSums[gardencorev1alpha1.SecretNameCACluster],
+			"checksum/secret-kube-controller-manager":        b.CheckSums[gardencorev1alpha1.DeploymentNameKubeControllerManager],
 			"checksum/secret-kube-controller-manager-server": b.CheckSums[common.KubeControllerManagerServerName],
 			"checksum/secret-service-account-key":            b.CheckSums["service-account-key"],
-			"checksum/secret-cloudprovider":                  b.CheckSums[common.CloudProviderSecretName],
-			"checksum/configmap-cloud-provider-config":       b.CheckSums[common.CloudProviderConfigName],
 		},
 		"objectCount": b.Shoot.GetNodeCount(),
 	}
-	cloudSpecificValues, err := b.ShootCloudBotanist.GenerateKubeControllerManagerConfig()
-	if err != nil {
-		return err
-	}
 
-	if b.Shoot.IsHibernated {
-		deployment := &appsv1.Deployment{}
-		if err := b.K8sSeedClient.Client().Get(context.TODO(), kutil.Key(b.Shoot.SeedNamespace, common.KubeControllerManagerDeploymentName), deployment); err != nil && !apierrors.IsNotFound(err) {
+	if b.Shoot.HibernationEnabled {
+		replicaCount, err := common.CurrentReplicaCount(b.K8sSeedClient.Client(), b.Shoot.SeedNamespace, gardencorev1alpha1.DeploymentNameKubeControllerManager)
+		if err != nil {
 			return err
 		}
-
-		if deployment.Spec.Replicas == nil {
-			defaultValues["replicas"] = 0
-		} else {
-			defaultValues["replicas"] = *deployment.Spec.Replicas
-		}
+		defaultValues["replicas"] = replicaCount
 	}
 
 	controllerManagerConfig := b.Shoot.Info.Spec.Kubernetes.KubeControllerManager
@@ -479,80 +419,36 @@ func (b *HybridBotanist) DeployKubeControllerManager() error {
 		if controllerManagerConfig.HorizontalPodAutoscalerConfig != nil {
 			defaultValues["horizontalPodAutoscaler"] = controllerManagerConfig.HorizontalPodAutoscalerConfig
 		}
-	}
 
-	values, err := b.Botanist.InjectImages(defaultValues, b.SeedVersion(), b.ShootVersion(), common.HyperkubeImageName)
-	if err != nil {
-		return err
-	}
-
-	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, common.KubeControllerManagerDeploymentName), common.KubeControllerManagerDeploymentName, b.Shoot.SeedNamespace, values, cloudSpecificValues)
-}
-
-// DeployCloudControllerManager asks the Cloud Botanist to provide the cloud specific configuration values for the
-// cloud-controller-manager deployment.
-func (b *HybridBotanist) DeployCloudControllerManager() error {
-	defaultValues := map[string]interface{}{
-		"cloudProvider":     b.ShootCloudBotanist.GetCloudProviderName(),
-		"clusterName":       b.Shoot.SeedNamespace,
-		"kubernetesVersion": b.Shoot.Info.Spec.Kubernetes.Version,
-		"podNetwork":        b.Shoot.GetPodNetwork(),
-		"replicas":          b.Shoot.GetReplicas(1),
-		"podAnnotations": map[string]interface{}{
-			"checksum/secret-cloud-controller-manager":        b.CheckSums[common.CloudControllerManagerDeploymentName],
-			"checksum/secret-cloud-controller-manager-server": b.CheckSums[common.CloudControllerManagerServerName],
-			"checksum/secret-cloudprovider":                   b.CheckSums[common.CloudProviderSecretName],
-			"checksum/configmap-cloud-provider-config":        b.CheckSums[common.CloudProviderConfigName],
-		},
-	}
-	cloudSpecificValues, chartName, err := b.ShootCloudBotanist.GenerateCloudControllerManagerConfig()
-	if err != nil {
-		return err
-	}
-
-	if b.ShootedSeed != nil {
-		defaultValues["resources"] = map[string]interface{}{
-			"limits": map[string]interface{}{
-				"cpu":    "500m",
-				"memory": "512Mi",
-			},
+		if controllerManagerConfig.NodeCIDRMaskSize != nil {
+			defaultValues["nodeCIDRMaskSize"] = *controllerManagerConfig.NodeCIDRMaskSize
 		}
 	}
 
-	cloudControllerManagerConfig := b.Shoot.Info.Spec.Kubernetes.CloudControllerManager
-	if cloudControllerManagerConfig != nil {
-		defaultValues["featureGates"] = cloudControllerManagerConfig.FeatureGates
-	}
-
-	values, err := b.Botanist.InjectImages(defaultValues, b.SeedVersion(), b.ShootVersion(), common.HyperkubeImageName)
+	values, err := b.InjectSeedShootImages(defaultValues, common.HyperkubeImageName)
 	if err != nil {
 		return err
 	}
 
-	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, chartName), common.CloudControllerManagerDeploymentName, b.Shoot.SeedNamespace, values, cloudSpecificValues)
+	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, gardencorev1alpha1.DeploymentNameKubeControllerManager), b.Shoot.SeedNamespace, gardencorev1alpha1.DeploymentNameKubeControllerManager, values, nil)
 }
 
-// DeployKubeScheduler asks the Cloud Botanist to provide the cloud specific configuration values for the
-// kube-scheduler deployment.
+// DeployKubeScheduler deploys kube-scheduler deployment.
 func (b *HybridBotanist) DeployKubeScheduler() error {
 	defaultValues := map[string]interface{}{
 		"replicas":          b.Shoot.GetReplicas(1),
 		"kubernetesVersion": b.Shoot.Info.Spec.Kubernetes.Version,
 		"podAnnotations": map[string]interface{}{
-			"checksum/secret-kube-scheduler":        b.CheckSums[common.KubeSchedulerDeploymentName],
+			"checksum/secret-kube-scheduler":        b.CheckSums[gardencorev1alpha1.DeploymentNameKubeScheduler],
 			"checksum/secret-kube-scheduler-server": b.CheckSums[common.KubeSchedulerServerName],
 		},
-	}
-	cloudValues, err := b.ShootCloudBotanist.GenerateKubeSchedulerConfig()
-	if err != nil {
-		return err
 	}
 
 	if b.ShootedSeed != nil {
 		defaultValues["resources"] = map[string]interface{}{
 			"limits": map[string]interface{}{
 				"cpu":    "300m",
-				"memory": "350Mi",
+				"memory": "512Mi",
 			},
 		}
 	}
@@ -562,10 +458,105 @@ func (b *HybridBotanist) DeployKubeScheduler() error {
 		defaultValues["featureGates"] = schedulerConfig.FeatureGates
 	}
 
-	values, err := b.Botanist.InjectImages(defaultValues, b.SeedVersion(), b.ShootVersion(), common.HyperkubeImageName)
+	values, err := b.InjectSeedShootImages(defaultValues, common.HyperkubeImageName)
 	if err != nil {
 		return err
 	}
 
-	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, common.KubeSchedulerDeploymentName), common.KubeSchedulerDeploymentName, b.Shoot.SeedNamespace, values, cloudValues)
+	return b.ApplyChartSeed(filepath.Join(chartPathControlPlane, gardencorev1alpha1.DeploymentNameKubeScheduler), b.Shoot.SeedNamespace, gardencorev1alpha1.DeploymentNameKubeScheduler, values, nil)
+}
+
+// DeployETCD deploys two etcd clusters via StatefulSets. The first etcd cluster (called 'main') is used for all the
+// data the Shoot Kubernetes cluster needs to store, whereas the second etcd luster (called 'events') is only used to
+// store the events data. The objectstore is also set up to store the backups.
+func (b *HybridBotanist) DeployETCD(ctx context.Context) error {
+	var (
+		backupInfraName      = common.GenerateBackupInfrastructureName(b.Shoot.Info.Status.TechnicalID, b.Shoot.Info.Status.UID)
+		lastSnapshotRevision int64
+	)
+	backupInfra := &gardenv1beta1.BackupInfrastructure{}
+	err := b.K8sGardenClient.Client().Get(ctx, kutil.Key(b.Shoot.Info.Namespace, backupInfraName), backupInfra)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		// if BackupInfra NotFound then its new shoot and we have to do noting w.r.t. backward compatibility.
+	} else {
+		// Support backward compatibility.
+		b.Logger.Infof("Associated backupInfra resource %s found. Looking for latest snapshot revision on it.", backupInfraName)
+		lastSnapshotRevision, err = getLatestSnapshotRevision(b.SeedCloudBotanist)
+		if err != nil {
+			return err
+		}
+		b.Logger.Infof("Found last snapshot with latest revision %d", lastSnapshotRevision)
+	}
+
+	etcdConfig := map[string]interface{}{
+		"podAnnotations": map[string]interface{}{
+			"checksum/secret-etcd-ca":         b.CheckSums[gardencorev1alpha1.SecretNameCAETCD],
+			"checksum/secret-etcd-server-tls": b.CheckSums["etcd-server-tls"],
+			"checksum/secret-etcd-client-tls": b.CheckSums["etcd-client-tls"],
+		},
+		"storageCapacity": b.Seed.GetValidVolumeSize("10Gi"),
+	}
+
+	etcd, err := b.InjectSeedShootImages(etcdConfig, common.ETCDImageName)
+	if err != nil {
+		return err
+	}
+
+	for _, role := range []string{common.EtcdRoleMain, common.EtcdRoleEvents} {
+		etcd["role"] = role
+		if role == common.EtcdRoleMain {
+			// etcd-main emits extensive (histogram) metrics
+			etcd["metrics"] = "extensive"
+			if lastSnapshotRevision > 0 {
+				etcd["failBelowRevision"] = lastSnapshotRevision
+			}
+		}
+
+		if b.Shoot.HibernationEnabled {
+			statefulset := &appsv1.StatefulSet{}
+			if err := client.IgnoreNotFound(b.K8sSeedClient.Client().Get(ctx, kutil.Key(b.Shoot.SeedNamespace, fmt.Sprintf("etcd-%s", role)), statefulset)); err != nil {
+				return err
+			}
+
+			if statefulset.Spec.Replicas == nil {
+				etcd["replicas"] = 0
+			} else {
+				etcd["replicas"] = *statefulset.Spec.Replicas
+			}
+		}
+
+		if err := b.ApplyChartSeed(filepath.Join(chartPathControlPlane, "etcd"), b.Shoot.SeedNamespace, fmt.Sprintf("etcd-%s", role), nil, etcd); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func getLatestSnapshotRevision(seedCloudBotanist cloudbotanist.CloudBotanist) (int64, error) {
+	secretData, err := seedCloudBotanist.GenerateEtcdBackupConfig()
+	if err != nil {
+		return 0, err
+	}
+
+	store, err := seedCloudBotanist.GetEtcdBackupSnapstore(secretData)
+	if err != nil {
+		return 0, err
+	}
+
+	fullSnap, deltaSnap, err := miscellaneous.GetLatestFullSnapshotAndDeltaSnapList(store)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(deltaSnap) != 0 {
+		return deltaSnap[len(deltaSnap)-1].LastRevision, nil
+	}
+	if fullSnap != nil {
+		return fullSnap.LastRevision, nil
+	}
+	return 0, nil
 }

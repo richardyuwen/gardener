@@ -1,20 +1,26 @@
-apiVersion: extensions/v1beta1
+apiVersion: {{ include "ingressversion" . }}
 kind: Ingress
 metadata:
+  name: kibana
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kibana-logging
+    garden.sapcloud.io/role: logging
   annotations:
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/auth-realm: Authentication Required
     nginx.ingress.kubernetes.io/auth-secret: kibana-basic-auth
     nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/configuration-snippet: "proxy_set_header Authorization $http_authorization;"
   name: kibana
   namespace: {{.Release.Namespace}}
 spec:
   tls:
   - secretName: kibana-tls
     hosts:
-    - {{.Values.ingress.host}}
+    - {{ .Values.ingress.host }}
   rules:
-  - host: {{.Values.ingress.host}}
+  - host: {{ .Values.ingress.host }}
     http:
       paths:
       - backend:

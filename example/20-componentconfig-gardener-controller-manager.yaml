@@ -7,10 +7,19 @@ clientConnection:
   qps: 100
   burst: 130
 controllers:
+  plant:
+    syncPeriod: 10s
+    concurrentSyncs: 5
   shoot:
     concurrentSyncs: 20
     syncPeriod: 1h
     retryDuration: 24h
+#    `respectSyncPeriodOverwrite` specifies whether Shoot owners can
+#    mark their Shoots ignored (no reconciliation) or change their sync period.
+#    respectSyncPeriodOverwrite: true
+#    `reconcileInMaintenanceOnly` specifies whether Shoot reconciliations
+#    can only happen during their maintenance time window or not.
+#    reconcileInMaintenanceOnly: true
   shootCare:
     concurrentSyncs: 5
     syncPeriod: 30s
@@ -37,7 +46,14 @@ controllers:
   backupInfrastructure:
     concurrentSyncs: 20
     syncPeriod: 24h
-    deletionGracePeriodDays: 0
+    deletionGracePeriodHours: 0
+  backupBucket:
+    concurrentSyncs: 20
+    syncPeriod: 10m
+  backupEntry:
+    concurrentSyncs: 20
+    syncPeriod: 10m
+    deletionGracePeriodHours: 0
 leaderElection:
   leaderElect: true
   leaseDuration: 15s
@@ -65,7 +81,3 @@ shootBackup:
   schedule: "0 */24 * * *"
 featureGates:
   Logging: true
-  # If enabled you require a proper configuration, please see example/10-secret-certificate-management-config.yaml
-  # and https://gardener.cloud/050-tutorials/content/howto/gardener_certificate_management/.
-  CertificateManagement: false
-  VPA: true

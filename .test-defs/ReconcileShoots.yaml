@@ -1,0 +1,23 @@
+kind: TestDefinition
+metadata:
+  name: reconcile-shoots
+spec:
+  owner: gardener-oq@listserv.sap.com
+  description: Tests to wait and check if all shoots are successfully reconciled
+
+  activeDeadlineSeconds: 3600
+
+  config:
+  - name: GO111MODULE
+    value: "on"
+    type: env
+
+  command: [bash, -c]
+  args:
+  - >-
+    go test -mod=vendor ./test/integration/gardener/reconcile
+    --v -ginkgo.v -ginkgo.progress -ginkgo.noColor --verbose=debug
+    -kubeconfig=$TM_KUBECONFIG_PATH/gardener.config
+    -version=$GARDENER_VERSION
+
+  image: golang:1.12.7

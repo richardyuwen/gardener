@@ -1,0 +1,43 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dependency-watchdog-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: dependency-watchdog
+data:
+  dep-config.yaml: |-
+      namespace: {{ .Release.Namespace }}
+      services:
+        kube-apiserver:
+          dependantPods:
+          - name: controlplane
+            selector:
+              matchExpressions:
+              - key: garden.sapcloud.io/role
+                operator: In
+                values:
+                - controlplane
+              - key: role
+                operator: NotIn
+                values:
+                - main
+              - key: role
+                operator: NotIn
+                values:
+                - apiserver
+        etcd-main-client:
+          dependantPods:
+          - name: controlplane
+            selector:
+              matchExpressions:
+              - key: garden.sapcloud.io/role
+                operator: In
+                values:
+                - controlplane
+              - key: role
+                operator: In
+                values:
+                - apiserver
+

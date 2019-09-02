@@ -16,9 +16,11 @@ package storage
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gardener/gardener/pkg/apis/garden"
-	"github.com/gardener/gardener/pkg/apis/garden/helper"
+	gardenhelper "github.com/gardener/gardener/pkg/apis/garden/helper"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metatable "k8s.io/apimachinery/pkg/api/meta/table"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,7 +39,7 @@ func newTableConvertor() rest.TableConvertor {
 	return &convertor{
 		headers: []metav1beta1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name", Description: swaggerMetadataDescriptions["name"]},
-			{Name: "CloudProfile", Type: "string", Format: "name", Description: swaggerMetadataDescriptions["cloudprofile"]},
+			{Name: "Provider (CloudProfile)", Type: "string", Format: "name", Description: swaggerMetadataDescriptions["cloudprofile"]},
 			{Name: "Region", Type: "string", Format: "name", Description: swaggerMetadataDescriptions["region"]},
 			{Name: "Ingress Domain", Type: "string", Format: "name", Description: swaggerMetadataDescriptions["domain"]},
 			{Name: "Available", Type: "string", Format: "name", Description: swaggerMetadataDescriptions["available"]},
@@ -73,10 +75,10 @@ func (c *convertor) ConvertToTable(ctx context.Context, obj runtime.Object, tabl
 		)
 
 		cells = append(cells, seed.Name)
-		cells = append(cells, seed.Spec.Cloud.Profile)
+		cells = append(cells, fmt.Sprintf("%s (%s)", seed.Spec.Provider.Type, seed.Spec.Cloud.Profile))
 		cells = append(cells, seed.Spec.Cloud.Region)
 		cells = append(cells, seed.Spec.IngressDomain)
-		if cond := helper.GetCondition(seed.Status.Conditions, garden.SeedAvailable); cond != nil {
+		if cond := gardenhelper.GetCondition(seed.Status.Conditions, garden.SeedAvailable); cond != nil {
 			cells = append(cells, cond.Status)
 		} else {
 			cells = append(cells, "<unknown>")

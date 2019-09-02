@@ -2,6 +2,18 @@
 
 package internalversion
 
+// BackupBucketListerExpansion allows custom methods to be added to
+// BackupBucketLister.
+type BackupBucketListerExpansion interface{}
+
+// BackupEntryListerExpansion allows custom methods to be added to
+// BackupEntryLister.
+type BackupEntryListerExpansion interface{}
+
+// BackupEntryNamespaceListerExpansion allows custom methods to be added to
+// BackupEntryNamespaceLister.
+type BackupEntryNamespaceListerExpansion interface{}
+
 // ControllerInstallationListerExpansion allows custom methods to be added to
 // ControllerInstallationLister.
 type ControllerInstallationListerExpansion interface{}
@@ -9,3 +21,11 @@ type ControllerInstallationListerExpansion interface{}
 // ControllerRegistrationListerExpansion allows custom methods to be added to
 // ControllerRegistrationLister.
 type ControllerRegistrationListerExpansion interface{}
+
+// PlantListerExpansion allows custom methods to be added to
+// PlantLister.
+type PlantListerExpansion interface{}
+
+// PlantNamespaceListerExpansion allows custom methods to be added to
+// PlantNamespaceLister.
+type PlantNamespaceListerExpansion interface{}

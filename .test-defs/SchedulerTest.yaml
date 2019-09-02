@@ -1,0 +1,20 @@
+kind: TestDefinition
+metadata:
+  name: scheduler-test
+spec:
+  owner: gardener-oq@listserv.sap.com
+  description: Tests the scheduler.
+
+  activeDeadlineSeconds: 5400
+  behavior:
+  - serial
+  config:
+  - name: GO111MODULE
+    value: "on"
+    type: env
+
+  command: [bash, -c]
+  args:
+  - go run -mod=vendor ./.test-defs/cmd/scheduler
+
+  image: golang:1.12.7

@@ -16,16 +16,17 @@ package resourcereferencemanager
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"time"
 
 	"github.com/gardener/gardener/pkg/apis/garden"
+	"github.com/gardener/gardener/pkg/apis/garden/helper"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/internalversion"
 	gardenlisters "github.com/gardener/gardener/pkg/client/garden/listers/garden/internalversion"
 	"github.com/gardener/gardener/pkg/operation/common"
+	"github.com/gardener/gardener/plugin/pkg/utils"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -160,12 +161,8 @@ func (r *ReferenceManager) ValidateInitialization() error {
 	return nil
 }
 
-func skipVerification(operation admission.Operation, metadata metav1.ObjectMeta) bool {
-	return operation == admission.Update && metadata.DeletionTimestamp != nil
-}
-
 // Admit ensures that referenced resources do actually exist.
-func (r *ReferenceManager) Admit(a admission.Attributes) error {
+func (r *ReferenceManager) Admit(a admission.Attributes, o admission.ObjectInterfaces) error {
 	// Wait until the caches have been synced
 	if r.readyFunc == nil {
 		r.AssignReadyFunc(func() bool {
@@ -192,7 +189,7 @@ func (r *ReferenceManager) Admit(a admission.Attributes) error {
 		if !ok {
 			return apierrors.NewBadRequest("could not convert resource into SecretBinding object")
 		}
-		if skipVerification(operation, binding.ObjectMeta) {
+		if utils.SkipVerification(operation, binding.ObjectMeta) {
 			return nil
 		}
 		err = r.ensureSecretBindingReferences(a, binding)
@@ -202,7 +199,7 @@ func (r *ReferenceManager) Admit(a admission.Attributes) error {
 		if !ok {
 			return apierrors.NewBadRequest("could not convert resource into Seed object")
 		}
-		if skipVerification(operation, seed.ObjectMeta) {
+		if utils.SkipVerification(operation, seed.ObjectMeta) {
 			return nil
 		}
 		err = r.ensureSeedReferences(seed)
@@ -212,7 +209,7 @@ func (r *ReferenceManager) Admit(a admission.Attributes) error {
 		if !ok {
 			return apierrors.NewBadRequest("could not convert resource into Shoot object")
 		}
-		if skipVerification(operation, shoot.ObjectMeta) {
+		if utils.SkipVerification(operation, shoot.ObjectMeta) {
 			return nil
 		}
 		// Add createdBy annotation to Shoot
@@ -231,7 +228,7 @@ func (r *ReferenceManager) Admit(a admission.Attributes) error {
 		if !ok {
 			return apierrors.NewBadRequest("could not convert resource into Project object")
 		}
-		if skipVerification(operation, project.ObjectMeta) {
+		if utils.SkipVerification(operation, project.ObjectMeta) {
 			return nil
 		}
 		// Set createdBy field in Project
@@ -258,13 +255,16 @@ func (r *ReferenceManager) Admit(a admission.Attributes) error {
 
 		if project.Spec.Owner != nil {
 			ownerPartOfMember := false
-			for _, member := range project.Spec.Members {
-				if member == *project.Spec.Owner {
+			for _, member := range project.Spec.ProjectMembers {
+				if member.Subject == *project.Spec.Owner {
 					ownerPartOfMember = true
 				}
 			}
 			if !ownerPartOfMember {
-				project.Spec.Members = append(project.Spec.Members, *project.Spec.Owner)
+				project.Spec.ProjectMembers = append(project.Spec.ProjectMembers, garden.ProjectMember{
+					Subject: *project.Spec.Owner,
+					Role:    garden.ProjectMemberAdmin,
+				})
 			}
 		}
 	}
@@ -321,14 +321,19 @@ func (r *ReferenceManager) ensureSecretBindingReferences(attributes admission.At
 			return err
 		}
 
-		if quota.Spec.Scope == garden.QuotaScopeProject {
+		scope, err := helper.QuotaScope(quota.Spec.Scope)
+		if err != nil {
+			return err
+		}
+
+		if scope == "project" {
 			projectQuotaCount++
 		}
-		if quota.Spec.Scope == garden.QuotaScopeSecret {
+		if scope == "secret" {
 			secretQuotaCount++
 		}
 		if projectQuotaCount > 1 || secretQuotaCount > 1 {
-			return fmt.Errorf("Only one quota per scope (%s or %s) can be assigned", garden.QuotaScopeProject, garden.QuotaScopeSecret)
+			return errors.New("Only one quota per scope (project or secret) can be assigned")
 		}
 	}
 

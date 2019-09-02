@@ -112,9 +112,8 @@ type ControllerInstallationControlInterface interface {
 }
 
 // NewDefaultControllerInstallationControl returns a new instance of the default implementation ControllerInstallationControlInterface that
-// implements the documented semantics for maintaining Shoots. updater is the UpdaterInterface used
-// to update the spec of Shoots. You should use an instance returned from NewDefaultControllerInstallationControl() for any
-// scenario other than testing.
+// implements the documented semantics for maintaining Shoots. You should use an instance returned from
+// NewDefaultControllerInstallationControl() for any scenario other than testing.
 func NewDefaultControllerInstallationControl(k8sGardenClient kubernetes.Interface, k8sGardenInformers gardeninformers.Interface, k8sGardenCoreInformers gardencoreinformers.Interface, recorder record.EventRecorder) ControllerInstallationControlInterface {
 	return &defaultControllerInstallationControl{k8sGardenClient, k8sGardenInformers, k8sGardenCoreInformers, recorder}
 }
@@ -160,17 +159,21 @@ func (c *defaultControllerInstallationControl) Reconcile(controllerInstallationO
 }
 
 func (c *defaultControllerInstallationControl) isDependentOnResource(resources map[string]string, shoot *gardenv1beta1.Shoot) bool {
-	machineImageName, err := helper.GetShootMachineImageName(shoot)
+	machineImages, err := helper.GetMachineImagesFromShoot(shoot)
 	if err != nil {
 		return false
 	}
 
 	for resourceKind, resourceType := range resources {
-		if resourceKind == extensionsv1alpha1.OperatingSystemConfigResource && strings.ToLower(resourceType) == strings.ToLower(string(machineImageName)) {
-			return true
+		for _, machineImage := range machineImages {
+			if machineImage == nil {
+				continue
+			}
+			if resourceKind == extensionsv1alpha1.OperatingSystemConfigResource && strings.ToLower(resourceType) == strings.ToLower(string(machineImage.Name)) {
+				return true
+			}
 		}
 	}
-
 	return false
 }
 

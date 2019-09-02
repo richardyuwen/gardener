@@ -3,10 +3,10 @@
 
   values={}
   if context.get("values", "") != "":
-    values=yaml.load(open(context.get("values", "")))
+    values=yaml.load(open(context.get("values", "")), Loader=yaml.Loader)
 
   if context.get("cloud", "") == "":
-    raise Exception("missing --var cloud={aws,azure,gcp,alicloud,openstack,local} flag")
+    raise Exception("missing --var cloud={aws,azure,gcp,alicloud,openstack,packet} flag")
 
   def value(path, default):
     keys=str.split(path, ".")
@@ -25,22 +25,22 @@
   kubernetesVersion=""
   if cloud == "aws":
     region="eu-west-1"
-    kubernetesVersion="1.13.4"
+    kubernetesVersion="1.15.2"
   elif cloud == "azure" or cloud == "az":
     region="westeurope"
-    kubernetesVersion="1.13.4"
+    kubernetesVersion="1.15.2"
   elif cloud == "gcp":
     region="europe-west1"
-    kubernetesVersion="1.13.4"
+    kubernetesVersion="1.15.2"
   elif cloud == "alicloud":
     region="cn-beijing"
-    kubernetesVersion="1.13.4"
+    kubernetesVersion="1.15.2"
+  elif cloud == "packet":
+    region="ewr1"
+    kubernetesVersion="1.15.2"
   elif cloud == "openstack" or cloud == "os":
     region="europe-1"
-    kubernetesVersion="1.13.4"
-  elif cloud == "local":
-    region="local"
-    kubernetesVersion="1.13.4"
+    kubernetesVersion="1.15.2"
 %>---
 apiVersion: garden.sapcloud.io/v1beta1
 kind: Shoot
@@ -48,10 +48,10 @@ metadata:
   name: ${value("metadata.name", "johndoe-" + cloud)}
   namespace: ${value("metadata.namespace", "garden-dev")}<% annotations = value("metadata.annotations", {}); labels = value("metadata.labels", {}) %>
   % if annotations != {}:
-  annotations: ${yaml.dump(annotations, width=10000)}
+  annotations: ${yaml.dump(annotations, width=10000, default_flow_style=None)}
   % endif
   % if labels != {}:
-  labels: ${yaml.dump(labels, width=10000)}
+  labels: ${yaml.dump(labels, width=10000, default_flow_style=None)}
   % endif
 spec:
   cloud:
@@ -61,6 +61,9 @@ spec:
       name: ${value("spec.cloud.secretBindingRef.name", "core-" + cloud)}
     % if cloud == "aws":
     aws:
+    # machineImage: # this machine image is default machine image for all worker pools
+    #   name: coreos
+    #   version: 2023.5.0
       networks:
         vpc:<% vpcID = value("spec.cloud.aws.networks.vpc.id", ""); vpcCIDR = value("spec.cloud.aws.networks.vpc.cidr", "10.250.0.0/16") %> # specify either 'id' or 'cidr'
           % if vpcID != "":
@@ -75,16 +78,65 @@ spec:
         workers: ${value("spec.cloud.aws.networks.workers", ["10.250.0.0/19"])}
       workers:<% workers=value("spec.cloud.aws.workers", []) %>
       % if workers != []:
-      ${yaml.dump(workers, width=10000)}
+      ${yaml.dump(workers, width=10000, default_flow_style=None)}
       % else:
       - name: cpu-worker
-        machineType: m4.large
+        machineType: m5.large
         volumeType: gp2
         volumeSize: 20Gi
         autoScalerMin: 2
         autoScalerMax: 2
         maxSurge: 1
         maxUnavailable: 0
+      # kubelet:<% kubelet=value("spec.cloud.aws.workers.kubelet", {}) %>
+        % if kubelet != {}:
+        kubelet:
+        ${yaml.dump(kubelet, width=10000, default_flow_style=None)}
+        % else:
+        # cpuCFSQuota: true
+        # cpuManagerPolicy: none
+        # podPidsLimit: 10
+        # maxPods: 110
+        # evictionPressureTransitionPeriod: 4m0s
+        # evictionMaxPodGracePeriod: 90
+        # evictionHard:
+        #   memoryAvailable: 100Mi
+        #   imageFSAvailable: 5%
+        #   imageFSInodesFree: 5%
+        #   nodeFSAvailable: 5%
+        #   nodeFSInodesFree: 5%
+        # evictionSoft:
+        #   memoryAvailable: 200Mi
+        #   imageFSAvailable: 10%
+        #   imageFSInodesFree: 10%
+        #   nodeFSAvailable: 10%
+        #   nodeFSInodesFree: 10%
+        # evictionSoftGracePeriod:
+        #   memoryAvailable: 1m30s
+        #   imageFSAvailable: 1m30s
+        #   imageFSInodesFree: 1m30s
+        #   nodeFSAvailable: 1m30s
+        #   nodeFSInodesFree: 1m30s
+        # evictionMinimumReclaim:
+        #   memoryAvailable: 0Mi
+        #   imageFSAvailable: 0Mi
+        #   imageFSInodesFree: 0Mi
+        #   nodeFSAvailable: 0Mi
+        #   nodeFSInodesFree: 0Mi
+        # featureGates:
+        #   SomeKubernetesFeature: true
+          % endif
+      # machineImage:
+      #   name: coreos
+      #   version: 2023.5.0
+      # labels:
+      #   key: value
+      # annotations:
+      #   key: value
+      # taints: # See also https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+      # - key: foo
+      #   value: bar
+      #   effect: NoSchedule
       % endif
       zones: ${value("spec.cloud.aws.zones", ["eu-west-1a"])}
     % endif
@@ -97,6 +149,9 @@ spec:
     # resourceGroup:
     #   name: mygroup
       % endif
+    # machineImage: # this machine image is default machine image for all worker pools
+    #   name: coreos
+    #   version: 2023.5.0
       networks:
         vnet:<% vnetName = value("spec.cloud.azure.networks.vnet.name", ""); vnetCIDR = value("spec.cloud.azure.networks.vnet.cidr", "10.250.0.0/16") %> # specify either 'name' or 'cidr'
           % if vnetName != "":
@@ -109,20 +164,72 @@ spec:
         workers: ${value("spec.cloud.azure.networks.workers", "10.250.0.0/19")}
       workers:<% workers=value("spec.cloud.azure.workers", []) %>
       % if workers != []:
-      ${yaml.dump(workers, width=10000)}
+      ${yaml.dump(workers, width=10000, default_flow_style=None)}
       % else:
       - name: cpu-worker
-        machineType: Standard_DS2_v2
+        machineType: Standard_D2_v3
         volumeType: standard
         volumeSize: 35Gi # must be at least 35Gi for Azure VMs
         autoScalerMin: 2
         autoScalerMax: 2
         maxSurge: 1
         maxUnavailable: 0
+      # kubelet:<% kubelet=value("spec.cloud.azure.workers.kubelet", {}) %>
+        % if kubelet != {}:
+        kubelet:
+        ${yaml.dump(kubelet, width=10000, default_flow_style=None)}
+        % else:
+        # cpuCFSQuota: true
+        # cpuManagerPolicy: none
+        # podPidsLimit: 10
+        # maxPods: 110
+        # evictionPressureTransitionPeriod: 4m0s
+        # evictionMaxPodGracePeriod: 90
+        # evictionHard:
+        #   memoryAvailable: 100Mi
+        #   imageFSAvailable: 5%
+        #   imageFSInodesFree: 5%
+        #   nodeFSAvailable: 5%
+        #   nodeFSInodesFree: 5%
+        # evictionSoft:
+        #   memoryAvailable: 200Mi
+        #   imageFSAvailable: 10%
+        #   imageFSInodesFree: 10%
+        #   nodeFSAvailable: 10%
+        #   nodeFSInodesFree: 10%
+        # evictionSoftGracePeriod:
+        #   memoryAvailable: 1m30s
+        #   imageFSAvailable: 1m30s
+        #   imageFSInodesFree: 1m30s
+        #   nodeFSAvailable: 1m30s
+        #   nodeFSInodesFree: 1m30s
+        # evictionMinimumReclaim:
+        #   memoryAvailable: 0Mi
+        #   imageFSAvailable: 0Mi
+        #   imageFSInodesFree: 0Mi
+        #   nodeFSAvailable: 0Mi
+        #   nodeFSInodesFree: 0Mi
+        # featureGates:
+        #   SomeKubernetesFeature: true
+          % endif
+      # machineImage:
+      #   name: coreos
+      #   version: 2023.5.0
+      # labels:
+      #   key: value
+      # annotations:
+      #   key: value
+      # taints: # See also https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+      # - key: foo
+      #   value: bar
+      #   effect: NoSchedule
       % endif
     % endif
     % if cloud == "alicloud":
     alicloud:
+    # machineImage: # this machine image is default machine image for all worker pools
+    #   name: coreos-alicloud
+    #   version: 2023.5.0
       networks:
         vpc:<% vpcID = value("spec.cloud.alicloud.networks.vpc.id", ""); vpcCIDR = value("spec.cloud.alicloud.networks.vpc.cidr", "10.250.0.0/16") %> # specify either 'id' or 'cidr'
           % if vpcID != "":
@@ -135,19 +242,142 @@ spec:
         workers: ${value("spec.cloud.alicloud.networks.workers", ["10.250.0.0/19"])}
       workers:<% workers=value("spec.cloud.alicloud.workers", []) %>
       % if workers != []:
-      ${yaml.dump(workers, width=10000)}
+      ${yaml.dump(workers, width=10000, default_flow_style=None)}
       % else:
       - name: small
         machineType: ecs.sn2ne.xlarge
         volumeType: cloud_efficiency
         volumeSize: 30Gi
-        autoScalerMin: 1
+        autoScalerMin: 2
         autoScalerMax: 2
+        maxSurge: 1
+        maxUnavailable: 0
+      # kubelet:<% kubelet=value("spec.cloud.alicloud.workers.kubelet", {}) %>
+        % if kubelet != {}:
+        kubelet:
+        ${yaml.dump(kubelet, width=10000, default_flow_style=None)}
+        % else:
+        # cpuCFSQuota: true
+        # cpuManagerPolicy: none
+        # podPidsLimit: 10
+        # maxPods: 110
+        # evictionPressureTransitionPeriod: 4m0s
+        # evictionMaxPodGracePeriod: 90
+        # evictionHard:
+        #   memoryAvailable: 100Mi
+        #   imageFSAvailable: 5%
+        #   imageFSInodesFree: 5%
+        #   nodeFSAvailable: 5%
+        #   nodeFSInodesFree: 5%
+        # evictionSoft:
+        #   memoryAvailable: 200Mi
+        #   imageFSAvailable: 10%
+        #   imageFSInodesFree: 10%
+        #   nodeFSAvailable: 10%
+        #   nodeFSInodesFree: 10%
+        # evictionSoftGracePeriod:
+        #   memoryAvailable: 1m30s
+        #   imageFSAvailable: 1m30s
+        #   imageFSInodesFree: 1m30s
+        #   nodeFSAvailable: 1m30s
+        #   nodeFSInodesFree: 1m30s
+        # evictionMinimumReclaim:
+        #   memoryAvailable: 0Mi
+        #   imageFSAvailable: 0Mi
+        #   imageFSInodesFree: 0Mi
+        #   nodeFSAvailable: 0Mi
+        #   nodeFSInodesFree: 0Mi
+        # featureGates:
+        #   SomeKubernetesFeature: true
+          % endif
+      # machineImage:
+      #   name: coreos-alicloud
+      #   version: 2023.5.0
+      # labels:
+      #   key: value
+      # annotations:
+      #   key: value
+      # taints: # See also https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+      # - key: foo
+      #   value: bar
+      #   effect: NoSchedule
       % endif
       zones: ${value("spec.cloud.alicloud.zones", ["cn-beijing-f"])}
     % endif
+    % if cloud == "packet":
+    packet:
+    # machineImage: # this machine image is default machine image for all worker pools
+    #   name: coreos
+    #   version: 2079.3.0
+      workers:<% workers=value("spec.cloud.packet.workers", []) %>
+      % if workers != []:
+      ${yaml.dump(workers, width=10000, default_flow_style=None)}
+      % else:
+      - name: small
+        machineType: c1.small
+        volumeType: standard
+        volumeSize: 30Gi
+        autoScalerMin: 1
+        autoScalerMax: 2
+        maxSurge: 1
+        maxUnavailable: 0
+      # kubelet:<% kubelet=value("spec.cloud.packet.workers.kubelet", {}) %>
+        % if kubelet != {}:
+        kubelet:
+        ${yaml.dump(kubelet, width=10000, default_flow_style=None)}
+        % else:
+        # cpuCFSQuota: true
+        # cpuManagerPolicy: none
+        # podPidsLimit: 10
+        # maxPods: 110
+        # evictionPressureTransitionPeriod: 4m0s
+        # evictionMaxPodGracePeriod: 90
+        # evictionHard:
+        #   memoryAvailable: 100Mi
+        #   imageFSAvailable: 5%
+        #   imageFSInodesFree: 5%
+        #   nodeFSAvailable: 5%
+        #   nodeFSInodesFree: 5%
+        # evictionSoft:
+        #   memoryAvailable: 200Mi
+        #   imageFSAvailable: 10%
+        #   imageFSInodesFree: 10%
+        #   nodeFSAvailable: 10%
+        #   nodeFSInodesFree: 10%
+        # evictionSoftGracePeriod:
+        #   memoryAvailable: 1m30s
+        #   imageFSAvailable: 1m30s
+        #   imageFSInodesFree: 1m30s
+        #   nodeFSAvailable: 1m30s
+        #   nodeFSInodesFree: 1m30s
+        # evictionMinimumReclaim:
+        #   memoryAvailable: 0Mi
+        #   imageFSAvailable: 0Mi
+        #   imageFSInodesFree: 0Mi
+        #   nodeFSAvailable: 0Mi
+        #   nodeFSInodesFree: 0Mi
+        # featureGates:
+        #   SomeKubernetesFeature: true
+          % endif
+      # machineImage:
+      #   name: coreos
+      #   version: 2079.3.0
+      # labels:
+      #   key: value
+      # annotations:
+      #   key: value
+      # taints: # See also https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+      # - key: foo
+      #   value: bar
+      #   effect: NoSchedule
+      % endif
+      zones: ${value("spec.cloud.packet.zones", ["ewr1"])}
+    % endif
     % if cloud == "gcp":
     gcp:
+    # machineImage: # this machine image is default machine image for all worker pools
+    #   name: coreos
+    #   version: 2023.5.0
       networks:<% vpcName = value("spec.cloud.gcp.networks.vpc.name", "") %>
       % if vpcName != "":
         vpc:
@@ -160,7 +390,7 @@ spec:
         workers: ${value("spec.cloud.gcp.networks.workers", ["10.250.0.0/19"])}
       workers:<% workers=value("spec.cloud.gcp.workers", []) %>
       % if workers != []:
-      ${yaml.dump(workers, width=10000)}
+      ${yaml.dump(workers, width=10000, default_flow_style=None)}
       % else:
       - name: cpu-worker
         machineType: n1-standard-4
@@ -170,6 +400,55 @@ spec:
         autoScalerMax: 2
         maxSurge: 1
         maxUnavailable: 0
+      # kubelet:<% kubelet=value("spec.cloud.gcp.workers.kubelet", {}) %>
+        % if kubelet != {}:
+        kubelet:
+        ${yaml.dump(kubelet, width=10000, default_flow_style=None)}
+        % else:
+        # cpuCFSQuota: true
+        # cpuManagerPolicy: none
+        # podPidsLimit: 10
+        # maxPods: 110
+        # evictionPressureTransitionPeriod: 4m0s
+        # evictionMaxPodGracePeriod: 90
+        # evictionHard:
+        #   memoryAvailable: 100Mi
+        #   imageFSAvailable: 5%
+        #   imageFSInodesFree: 5%
+        #   nodeFSAvailable: 5%
+        #   nodeFSInodesFree: 5%
+        # evictionSoft:
+        #   memoryAvailable: 200Mi
+        #   imageFSAvailable: 10%
+        #   imageFSInodesFree: 10%
+        #   nodeFSAvailable: 10%
+        #   nodeFSInodesFree: 10%
+        # evictionSoftGracePeriod:
+        #   memoryAvailable: 1m30s
+        #   imageFSAvailable: 1m30s
+        #   imageFSInodesFree: 1m30s
+        #   nodeFSAvailable: 1m30s
+        #   nodeFSInodesFree: 1m30s
+        # evictionMinimumReclaim:
+        #   memoryAvailable: 0Mi
+        #   imageFSAvailable: 0Mi
+        #   imageFSInodesFree: 0Mi
+        #   nodeFSAvailable: 0Mi
+        #   nodeFSInodesFree: 0Mi
+        # featureGates:
+        #   SomeKubernetesFeature: true
+          % endif
+      # machineImage:
+      #   name: coreos
+      #   version: 2023.5.0
+      # labels:
+      #   key: value
+      # annotations:
+      #   key: value
+      # taints: # See also https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+      # - key: foo
+      #   value: bar
+      #   effect: NoSchedule
       % endif
       zones: ${value("spec.cloud.gcp.zones", ["europe-west1-b"])}
     % endif
@@ -177,6 +456,9 @@ spec:
     openstack:
       loadBalancerProvider: ${value("spec.cloud.openstack.loadBalancerProvider", "haproxy")}
       floatingPoolName: ${value("spec.cloud.openstack.floatingPoolName", "MY-FLOATING-POOL")}
+    # machineImage: # this machine image is default machine image for all worker pools
+    #   name: coreos
+    #   version: 2023.5.0
       networks:<% routerID = value("spec.cloud.openstack.networks.router.id", "") %>
       % if routerID != "":
         router:
@@ -188,7 +470,7 @@ spec:
         workers: ${value("spec.cloud.openstack.networks.workers", ["10.250.0.0/19"])}
       workers:<% workers=value("spec.cloud.openstack.workers", []) %>
       % if workers != []:
-      ${yaml.dump(workers, width=10000)}
+      ${yaml.dump(workers, width=10000, default_flow_style=None)}
       % else:
       - name: cpu-worker
         machineType: medium_2_4
@@ -196,26 +478,86 @@ spec:
         autoScalerMax: 2
         maxSurge: 1
         maxUnavailable: 0
+      # kubelet:<% kubelet=value("spec.cloud.openstack.workers.kubelet", {}) %>
+        % if kubelet != {}:
+        kubelet:
+        ${yaml.dump(kubelet, width=10000, default_flow_style=None)}
+        % else:
+        # cpuCFSQuota: true
+        # cpuManagerPolicy: none
+        # podPidsLimit: 10
+        # maxPods: 110
+        # evictionPressureTransitionPeriod: 4m0s
+        # evictionMaxPodGracePeriod: 90
+        # evictionHard:
+        #   memoryAvailable: 100Mi
+        #   imageFSAvailable: 5%
+        #   imageFSInodesFree: 5%
+        #   nodeFSAvailable: 5%
+        #   nodeFSInodesFree: 5%
+        # evictionSoft:
+        #   memoryAvailable: 200Mi
+        #   imageFSAvailable: 10%
+        #   imageFSInodesFree: 10%
+        #   nodeFSAvailable: 10%
+        #   nodeFSInodesFree: 10%
+        # evictionSoftGracePeriod:
+        #   memoryAvailable: 1m30s
+        #   imageFSAvailable: 1m30s
+        #   imageFSInodesFree: 1m30s
+        #   nodeFSAvailable: 1m30s
+        #   nodeFSInodesFree: 1m30s
+        # evictionMinimumReclaim:
+        #   memoryAvailable: 0Mi
+        #   imageFSAvailable: 0Mi
+        #   imageFSInodesFree: 0Mi
+        #   nodeFSAvailable: 0Mi
+        #   nodeFSInodesFree: 0Mi
+        # featureGates:
+        #   SomeKubernetesFeature: true
+          % endif
+      # machineImage:
+      #   name: coreos
+      #   version: 2023.5.0
+      # labels:
+      #   key: value
+      # annotations:
+      #   key: value
+      # taints: # See also https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+      # - key: foo
+      #   value: bar
+      #   effect: NoSchedule
       % endif
       zones: ${value("spec.cloud.openstack.zones", ["europe-1a"])}
     % endif
-    % if cloud == "local":
-    local:
-      endpoint: ${value("spec.cloud.local.endpoint", "localhost:3777")} # endpoint service pointing to gardener-local-provider
-      networks:
-        workers: ${value("spec.cloud.local.networks.workers", ["192.168.99.200/25"])}
-    % endif
   kubernetes:
-    version: ${value("spec.kubernetes.version", kubernetesVersion)}<% kubeAPIServer=value("spec.kubernetes.kubeAPIServer", {}) %><% cloudControllerManager=value("spec.kubernetes.cloudControllerManager", {}) %><% kubeControllerManager=value("spec.kubernetes.kubeControllerManager", {}) %><% kubeScheduler=value("spec.kubernetes.kubeScheduler", {}) %><% kubeProxy=value("spec.kubernetes.kubeProxy", {}) %><% kubelet=value("spec.kubernetes.kubelet", {}) %>
+  # clusterAutoscaler:
+  #   scaleDownUtilizationThreshold: 0.5
+  #   scaleDownUnneededTime: 30m
+  #   scaleDownDelayAfterAdd: 60m
+  #   scaleDownDelayAfterFailure: 10m
+  #   scaleDownDelayAfterDelete: 10s
+  #   scanInterval: 10s
+    version: ${value("spec.kubernetes.version", kubernetesVersion)}<% kubeAPIServer=value("spec.kubernetes.kubeAPIServer", {}) %><% cloudControllerManager=value("spec.kubernetes.cloudControllerManager", {}) %><% kubeControllerManager=value("spec.kubernetes.kubeControllerManager", {}) %><% kubeScheduler=value("spec.kubernetes.kubeScheduler", {}) %><% kubeProxy=value("spec.kubernetes.kubeProxy", {}) %><% kubelet=value("spec.kubernetes.kubelet", {}) %> # specify "major.minor" to get latest patch version
     allowPrivilegedContainers: ${value("spec.kubernetes.allowPrivilegedContainers", "true")} # 'true' means that all authenticated users can use the "gardener.privileged" PodSecurityPolicy, allowing full unrestricted access to Pod features.
     % if kubeAPIServer != {}:
-    kubeAPIServer: ${yaml.dump(kubeAPIServer, width=10000)}
+    kubeAPIServer: ${yaml.dump(kubeAPIServer, width=10000, default_flow_style=None)}
     % else:
   # kubeAPIServer:
+  #   admissionPlugins:
+  #   - name: PodNodeSelector
+  #     config: |
+  #       podNodeSelectorPluginConfig:
+  #         clusterDefaultNodeSelector: <node-selectors-labels>
+  #         namespace1: <node-selectors-labels>
+  #         namespace2: <node-selectors-labels>
+  #   auditConfig:
+  #     auditPolicy:
+  #       configMapRef:
+  #         name: auditpolicy
+  #   enableBasicAuthentication: true
   #   featureGates:
   #     SomeKubernetesFeature: true
-  #   runtimeConfig:
-  #     scheduling.k8s.io/v1alpha1: true
   #   oidcConfig:
   #     caBundle: |
   #       -----BEGIN CERTIFICATE-----
@@ -231,31 +573,30 @@ spec:
   #-#-# only usable with Kubernetes >= 1.11
   #     requiredClaims:
   #       key: value
-  #   admissionPlugins:
-  #   - name: PodNodeSelector
-  #     config: |
-  #       podNodeSelectorPluginConfig:
-  #         clusterDefaultNodeSelector: <node-selectors-labels>
-  #         namespace1: <node-selectors-labels>
-  #         namespace2: <node-selectors-labels>
-  #   auditConfig:
-  #     auditPolicy:
-  #       configMapRef:
-  #         name: auditpolicy
+  #   runtimeConfig:
+  #     scheduling.k8s.io/v1alpha1: true
+  #-#-# requires TokenRequest feature gate
+  #-#-# See https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
+  #   serviceAccountConfig:
+  #     issuer: "https://${value("spec.dns.domain", value("metadata.name", "johndoe-" + cloud) + "." + value("metadata.namespace", "garden-dev") + ".example.com")}"
+  #     signingKeySecretName: "service-account-signing-key"
+  #   apiAudiences: ["some", "audiences"]
   % endif
     % if cloudControllerManager != {}:
-    cloudControllerManager: ${yaml.dump(cloudControllerManager, width=10000)}
+    cloudControllerManager: ${yaml.dump(cloudControllerManager, width=10000, default_flow_style=None)}
     % else:
   # cloudControllerManager:
   #   featureGates:
   #     SomeKubernetesFeature: true
   % endif
     % if kubeControllerManager != {}:
-    kubeControllerManager: ${yaml.dump(kubeControllerManager, width=10000)}
+    kubeControllerManager: ${yaml.dump(kubeControllerManager, width=10000, default_flow_style=None)}
     % else:
   # kubeControllerManager:
   #   featureGates:
   #     SomeKubernetesFeature: true
+  # The NodeCIRDMaskSize field is immutable due to https://github.com/kubernetes/kubernetes/issues/70957
+  #   nodeCIDRMaskSize: 24
   #   horizontalPodAutoscaler:
   #     syncPeriod: 30s
   #     tolerance: 0.1
@@ -268,14 +609,14 @@ spec:
   #     cpuInitializationPeriod: 5m0s
   % endif
     % if kubeScheduler != {}:
-    kubeScheduler: ${yaml.dump(kubeScheduler, width=10000)}
+    kubeScheduler: ${yaml.dump(kubeScheduler, width=10000, default_flow_style=None)}
     % else:
   # kubeScheduler:
   #   featureGates:
   #     SomeKubernetesFeature: true
   % endif
     % if kubeProxy != {}:
-    kubeProxy: ${yaml.dump(kubeProxy, width=10000)}
+    kubeProxy: ${yaml.dump(kubeProxy, width=10000, default_flow_style=None)}
     % else:
   # kubeProxy:
   #   featureGates:
@@ -283,24 +624,30 @@ spec:
   #   mode: IPVS
   % endif
     % if kubelet != {}:
-    kubelet: ${yaml.dump(kubelet, width=10000)}
+    kubelet: ${yaml.dump(kubelet, width=10000, default_flow_style=None)}
     % else:
   # kubelet:
+  #   cpuCFSQuota: true
+  #   cpuManagerPolicy: none
   #   podPidsLimit: 10
   #   featureGates:
   #     SomeKubernetesFeature: true
   % endif
   dns:
-    provider: ${value("spec.dns.provider", "aws-route53") if cloud != "local" else "unmanaged"}
-    domain: ${value("spec.dns.domain", value("metadata.name", "johndoe-" + cloud) + "." + value("metadata.namespace", "garden-dev") + ".example.com") if cloud != "local" else "<local-kubernetes-ip>.nip.io"}<% hibernation = value("spec.hibernation", {}) %>
+    domain: ${value("spec.dns.domain", value("metadata.name", "johndoe-" + cloud) + "." + value("metadata.namespace", "garden-dev") + ".example.com")}<% hibernation = value("spec.hibernation", {}) %> # if not specified then Gardener will try to use the default domain for this shoot
+  # provider: ${value("spec.dns.provider", "aws-route53")}     # only relevant if a custom domain is used for this shoot
+  # secretName: my-dns-secret # only relevant if a custom domain is used for this shoot
+  # includeZones: []          # only relevant if a custom domain is used for this shoot
+  # excludeZones: []          # only relevant if a custom domain is used for this shoot
   % if hibernation != {}:
-  hibernation: ${yaml.dump(hibernation, width=10000)}
+  hibernation: ${yaml.dump(hibernation, width=10000, default_flow_style=None)}
   % else:
 # hibernation:
 #   enabled: false
 #   schedules:
 #   - start: "0 20 * * *" # Start hibernation every day at 8PM
 #     end: "0 6 * * *"    # Stop hibernation every day at 6AM
+#     location: "America/Los_Angeles" # Specify a location for the cron to run in
   % endif
   maintenance:
     timeWindow:
@@ -308,7 +655,7 @@ spec:
       end: ${value("spec.maintenance.timeWindow.end", "230000+0100")}
     autoUpdate:
       kubernetesVersion: ${value("maintenance.autoUpdate.kubernetesVersion", "true")}
-  % if cloud != "local":
+      machineImageVersion: ${value("maintenance.autoUpdate.machineImageVersion", "true")}
   # Backup configuration for Shoot clusters is deprecated and no longer supported.
   # The responsibility for these settings has been shifted to Garden administrators.
   # This field will be removed in the future and is only kept for API compatibility reasons. It is not
@@ -316,7 +663,6 @@ spec:
   backup:
     schedule: ${value("backup.schedule", "\"0 */24 * * *\"")}
     maximum: ${value("backup.maximum", "7")}
-  % endif
   addons:
     # nginx-ingress addon is still supported but deprecated.
     # This field will be removed in the future. You should deploy your own ingress controller
@@ -326,6 +672,7 @@ spec:
       loadBalancerSourceRanges: ${value("spec.addons.nginx-ingress.loadBalancerSourceRanges", [])}
     kubernetes-dashboard:
       enabled: ${value("spec.addons.kubernetes-dashboard.enabled", "true")}
+    # authenticationMode: basic # allowed values: basic,token
   % if cloud == "aws":
     # kube2iam addon is still supported but deprecated.
     # This field will be removed in the future. You should deploy kube2iam as well as
@@ -335,7 +682,7 @@ spec:
       enabled: ${value("spec.addons.kube2iam.enabled", "true")}
       roles:<% roles=value("spec.addons.kube2iam.roles", []) %>
       % if roles != []:
-      ${yaml.dump(roles, width=10000)}
+      ${yaml.dump(roles, width=10000, default_flow_style=None)}
       % else:
       - name: ecr
         description: "Allow access to ECR repositories beginning with 'my-images/', and creation of new repositories"

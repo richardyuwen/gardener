@@ -17,7 +17,10 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
+
+var _ Object = (*OperatingSystemConfig)(nil)
 
 // OperatingSystemConfigResource is a constant for the name of the OperatingSystemConfig resource.
 const OperatingSystemConfigResource = "OperatingSystemConfig"
@@ -27,25 +30,37 @@ const OperatingSystemConfigResource = "OperatingSystemConfig"
 
 // OperatingSystemConfig is a specification for a OperatingSystemConfig resource
 type OperatingSystemConfig struct {
-	metav1.TypeMeta   `json:",inline"`
+	metav1.TypeMeta `json:",inline"`
+	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec   OperatingSystemConfigSpec   `json:"spec"`
 	Status OperatingSystemConfigStatus `json:"status"`
 }
 
+// GetExtensionSpec implements Object.
+func (o *OperatingSystemConfig) GetExtensionSpec() Spec {
+	return &o.Spec
+}
+
+// GetExtensionStatus implements Object.
+func (o *OperatingSystemConfig) GetExtensionStatus() Status {
+	return &o.Status
+}
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// OperatingSystemConfigList is a list of OperatingSystemConfig resources
+// OperatingSystemConfigList is a list of OperatingSystemConfig resources.
 type OperatingSystemConfigList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata"`
+	// +optional
+	metav1.ListMeta `json:"metadata,omitempty"`
 
 	// Items is the list of OperatingSystemConfigs.
 	Items []OperatingSystemConfig `json:"items"`
 }
 
-// OperatingSystemConfigSpec is the spec for a OperatingSystemConfig resource
+// OperatingSystemConfigSpec is the spec for a OperatingSystemConfig resource.
 type OperatingSystemConfigSpec struct {
 	// DefaultSpec is a structure containing common fields used by all extension resources.
 	DefaultSpec `json:",inline"`
@@ -68,6 +83,9 @@ type OperatingSystemConfigSpec struct {
 	// Files is a list of files that should get written to the host's file system.
 	// +optional
 	Files []File `json:"files,omitempty"`
+	// ProviderConfig is the configuration passed to extension resource.
+	// +optional
+	ProviderConfig *runtime.RawExtension `json:"providerConfig,omitempty"`
 }
 
 // Unit is a unit for the operating system configuration (usually, a systemd unit).
@@ -137,7 +155,7 @@ type FileContentInline struct {
 	Data string `json:"data"`
 }
 
-// OperatingSystemConfigStatus is the status for a OperatingSystemConfig resource
+// OperatingSystemConfigStatus is the status for a OperatingSystemConfig resource.
 type OperatingSystemConfigStatus struct {
 	// DefaultStatus is a structure containing common fields used by all extension resources.
 	DefaultStatus `json:",inline"`

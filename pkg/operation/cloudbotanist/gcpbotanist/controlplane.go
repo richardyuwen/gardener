@@ -15,168 +15,48 @@
 package gcpbotanist
 
 import (
-	"fmt"
-	"path"
+	"context"
 
+	"cloud.google.com/go/storage"
+	"github.com/gardener/etcd-backup-restore/pkg/snapstore"
+	"github.com/gardener/etcd-backup-restore/pkg/snapstore/gcs"
 	"github.com/gardener/gardener/pkg/operation/common"
-	"github.com/gardener/gardener/pkg/operation/terraformer"
+	"google.golang.org/api/option"
 )
 
-const cloudProviderConfigTemplate = `
-[Global]
-project-id=%q
-network-name=%q
-%v
-multizone=true
-local-zone=%q
-token-url=nil
-node-tags=%q
-`
-
-// GenerateCloudProviderConfig generates the GCE cloud provider config.
-// See this for more details:
-// https://github.com/kubernetes/kubernetes/blob/master/pkg/cloudprovider/providers/gce/gce.go
-func (b *GCPBotanist) GenerateCloudProviderConfig() (string, error) {
-	networkName := b.VPCName
-	if networkName == "" {
-		networkName = b.Shoot.SeedNamespace
-	}
-
-	var (
-		subnetID       = "subnet_internal"
-		subNetworkName = ""
-	)
-	tf, err := b.NewShootTerraformer(common.TerraformerPurposeInfra)
-	if err != nil {
-		return "", err
-	}
-	stateVariables, err := tf.GetStateOutputVariables(subnetID)
-	if err != nil {
-		if !terraformer.IsVariablesNotFoundError(err) {
-			return "", err
-		}
-		b.Logger.Debugf("Skipping explicit GCP subnet creation for internal loadbalancers because subnet_internal variable has not been found in the Terraform state.")
-	} else {
-		subNetworkName = fmt.Sprintf("subnetwork-name=%q", stateVariables[subnetID])
-	}
-	return fmt.Sprintf(
-		cloudProviderConfigTemplate,
-		b.Project,
-		networkName,
-		subNetworkName,
-		b.Shoot.Info.Spec.Cloud.GCP.Zones[0],
-		b.Shoot.SeedNamespace,
-	), nil
-}
-
-// RefreshCloudProviderConfig refreshes the cloud provider credentials in the existing cloud
-// provider config.
-// Not needed on GCP (cloud provider config does not contain the credentials), hence, the
-// original is returned back.
-func (b *GCPBotanist) RefreshCloudProviderConfig(currentConfig map[string]string) map[string]string {
-	return currentConfig
-}
-
-// GenerateKubeAPIServerServiceConfig generates the cloud provider specific values which are required to render the
-// Service manifest of the kube-apiserver-service properly.
-func (b *GCPBotanist) GenerateKubeAPIServerServiceConfig() (map[string]interface{}, error) {
-	return nil, nil
-}
-
-// GenerateKubeAPIServerExposeConfig defines the cloud provider specific values which configure how the kube-apiserver
-// is exposed to the public.
-func (b *GCPBotanist) GenerateKubeAPIServerExposeConfig() (map[string]interface{}, error) {
-	return map[string]interface{}{
-		"advertiseAddress": b.APIServerAddress,
-	}, nil
-}
-
-// GenerateKubeAPIServerConfig generates the cloud provider specific values which are required to render the
-// Deployment manifest of the kube-apiserver properly.
-func (b *GCPBotanist) GenerateKubeAPIServerConfig() (map[string]interface{}, error) {
-	return map[string]interface{}{
-		"environment": getGCPCredentialsEnvironment(),
-	}, nil
-}
-
-// GenerateCloudControllerManagerConfig generates the cloud provider specific values which are required to
-// render the Deployment manifest of the cloud-controller-manager properly.
-func (b *GCPBotanist) GenerateCloudControllerManagerConfig() (map[string]interface{}, string, error) {
-	return map[string]interface{}{
-		"environment": getGCPCredentialsEnvironment(),
-	}, common.CloudControllerManagerDeploymentName, nil
-}
-
-// GenerateCSIConfig generates the configuration for CSI charts
-func (b *GCPBotanist) GenerateCSIConfig() (map[string]interface{}, error) {
-	return nil, nil
-}
-
-// GenerateKubeControllerManagerConfig generates the cloud provider specific values which are required to
-// render the Deployment manifest of the kube-controller-manager properly.
-func (b *GCPBotanist) GenerateKubeControllerManagerConfig() (map[string]interface{}, error) {
-	return map[string]interface{}{
-		"environment": getGCPCredentialsEnvironment(),
-	}, nil
-}
-
-// maps are mutable, so it's safer to create a new instance
-func getGCPCredentialsEnvironment() []map[string]interface{} {
-	return []map[string]interface{}{
-		{
-			"name":  "GOOGLE_APPLICATION_CREDENTIALS",
-			"value": fmt.Sprintf("/srv/cloudprovider/%s", ServiceAccountJSON),
-		},
-	}
-}
-
-// GenerateKubeSchedulerConfig generates the cloud provider specific values which are required to render the
-// Deployment manifest of the kube-scheduler properly.
-func (b *GCPBotanist) GenerateKubeSchedulerConfig() (map[string]interface{}, error) {
-	return nil, nil
-}
-
 // GenerateEtcdBackupConfig returns the etcd backup configuration for the etcd Helm chart.
-func (b *GCPBotanist) GenerateEtcdBackupConfig() (map[string][]byte, map[string]interface{}, error) {
+func (b *GCPBotanist) GenerateEtcdBackupConfig() (map[string][]byte, error) {
 	var (
-		mountPath  = "/root/.gcp/"
 		bucketName = "bucketName"
 	)
 	tf, err := b.NewBackupInfrastructureTerraformer()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	stateVariables, err := tf.GetStateOutputVariables(bucketName)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	secretData := map[string][]byte{
-		ServiceAccountJSON: []byte(b.MinifiedServiceAccount),
+		common.BackupBucketName: []byte(stateVariables[bucketName]),
+		ServiceAccountJSON:      []byte(b.MinifiedServiceAccount),
 	}
 
-	backupConfigData := map[string]interface{}{
-		"schedule":         b.Operation.ShootBackup.Schedule,
-		"storageProvider":  "GCS",
-		"storageContainer": stateVariables[bucketName],
-		"env": []map[string]interface{}{
-			{
-				"name":  "GOOGLE_APPLICATION_CREDENTIALS",
-				"value": path.Join(mountPath, ServiceAccountJSON),
-			},
-		},
-		"volumeMounts": []map[string]interface{}{
-			{
-				"mountPath": mountPath,
-				"name":      common.BackupSecretName,
-			},
-		},
-	}
-
-	return secretData, backupConfigData, nil
+	return secretData, nil
 }
 
-// DeployCloudSpecificControlPlane does currently nothing for GCP.
-func (b *GCPBotanist) DeployCloudSpecificControlPlane() error {
-	return nil
+// GetEtcdBackupSnapstore returns the etcd backup snapstore object.
+func (b *GCPBotanist) GetEtcdBackupSnapstore(secretData map[string][]byte) (snapstore.SnapStore, error) {
+	var (
+		serviceAccountJSON = secretData[ServiceAccountJSON]
+		bucket             = string(secretData[common.BackupBucketName])
+	)
+	client, err := storage.NewClient(context.TODO(), option.WithCredentialsJSON(serviceAccountJSON), option.WithScopes(storage.ScopeFullControl))
+	if err != nil {
+		return nil, err
+	}
+
+	gcsClient := gcs.AdaptClient(client)
+	return snapstore.NewGCSSnapStoreFromClient(bucket, "etcd-main/v1", "", 10, gcsClient), nil
 }

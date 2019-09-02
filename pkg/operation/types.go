@@ -21,7 +21,6 @@ import (
 
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/apis/garden/v1beta1/helper"
-	"github.com/gardener/gardener/pkg/chartrenderer"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/externalversions/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controllermanager/apis/config"
@@ -29,53 +28,41 @@ import (
 	"github.com/gardener/gardener/pkg/operation/seed"
 	"github.com/gardener/gardener/pkg/operation/shoot"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
+
 	prometheusapi "github.com/prometheus/client_golang/api"
 	prometheusclient "github.com/prometheus/client_golang/api/prometheus/v1"
+
 	"github.com/sirupsen/logrus"
+
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // Operation contains all data required to perform an operation on a Shoot cluster.
 type Operation struct {
-	Logger               *logrus.Entry
-	GardenerInfo         *gardenv1beta1.Gardener
-	Secrets              map[string]*corev1.Secret
-	CheckSums            map[string]string
-	ImageVector          imagevector.ImageVector
-	Garden               *garden.Garden
-	Seed                 *seed.Seed
-	Shoot                *shoot.Shoot
-	ShootedSeed          *helper.ShootedSeed
-	K8sGardenClient      kubernetes.Interface
-	K8sGardenInformers   gardeninformers.Interface
-	K8sSeedClient        kubernetes.Interface
-	K8sShootClient       kubernetes.Interface
-	ChartGardenRenderer  chartrenderer.Interface
-	ChartSeedRenderer    chartrenderer.Interface
-	ChartShootRenderer   chartrenderer.Interface
-	APIServerIngresses   []corev1.LoadBalancerIngress
-	APIServerAddress     string
-	SeedNamespaceObject  *corev1.Namespace
-	BackupInfrastructure *gardenv1beta1.BackupInfrastructure
-	ShootBackup          *config.ShootBackup
-	MachineDeployments   MachineDeployments
-	MonitoringClient     prometheusclient.API
+	Config                    *config.ControllerManagerConfiguration
+	Logger                    *logrus.Entry
+	GardenerInfo              *gardenv1beta1.Gardener
+	Secrets                   map[string]*corev1.Secret
+	CheckSums                 map[string]string
+	ImageVector               imagevector.ImageVector
+	Garden                    *garden.Garden
+	Seed                      *seed.Seed
+	Shoot                     *shoot.Shoot
+	ShootedSeed               *helper.ShootedSeed
+	K8sGardenClient           kubernetes.Interface
+	K8sGardenInformers        gardeninformers.Interface
+	K8sSeedClient             kubernetes.Interface
+	K8sShootClient            kubernetes.Interface
+	ChartApplierGarden        kubernetes.ChartApplier
+	ChartApplierSeed          kubernetes.ChartApplier
+	ChartApplierShoot         kubernetes.ChartApplier
+	APIServerAddress          string
+	APIServerHealthCheckToken string
+	SeedNamespaceObject       *corev1.Namespace
+	BackupInfrastructure      *gardenv1beta1.BackupInfrastructure
+	ShootBackup               *config.ShootBackup
+	MonitoringClient          prometheusclient.API
 }
-
-// MachineDeployment holds information about the name, class, replicas of a MachineDeployment
-// managed by the machine-controller-manager.
-type MachineDeployment struct {
-	Name           string
-	ClassName      string
-	Minimum        int
-	Maximum        int
-	MaxSurge       intstr.IntOrString
-	MaxUnavailable intstr.IntOrString
-}
-
-// MachineDeployments is a list of machine deployments.
-type MachineDeployments []MachineDeployment
 
 type prometheusRoundTripper struct {
 	authHeader string
